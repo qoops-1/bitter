@@ -13,7 +13,7 @@ struct Metainfo {
 }
 
 impl BDecode for Metainfo {
-    fn decode(s: &str) -> Result<Self, String> {
+    fn bdecode(s: &str) -> Result<Self, String> {
         unimplemented!()
     }
 }
