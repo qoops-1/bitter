@@ -24,8 +24,8 @@ fn bdecode<T : BDecode>(s: &str) -> Result<T, String> {
 impl BDecode for Metainfo {
     fn bdecode(benc: &BencodedValue) -> Result<Self, String> {
         let dict = benc.try_into_dict()?;
-        let announce = dict.get("announce").ok_or("Required field not found")?.try_into_string()?;
-        let info = dict.get("info").ok_or("Required field not found")?;
+        let announce = dict.get_key("announce")?.try_into_string()?;
+        let info = dict.get_key("info")?;
 
         Ok(Metainfo {
             announce,
@@ -39,25 +39,44 @@ struct MetainfoInfo {
     name: String,
     piece_length: i64,
     pieces: String,
-    files: Box<[MetainfoFile]>,
-    length: u64,
+    files: Vec<MetainfoFile>,
 }
 
 impl BDecode for MetainfoInfo {
     fn bdecode(benc: &BencodedValue) -> Result<Self, String> {
         let dict = benc.try_into_dict()?;
-        let name = dict.get("name").ok_or("Required field not found")?.try_into_string()?;
-        let piece_length = dict.get("piece_length").ok_or("Required field not found")?.try_into_int()?;
+        let name = dict.get_key("name")?.try_into_string()?;
+        let piece_length = dict.get_key("piece_length")?.try_into_int()?;
+        let pieces = dict.get_key("pieces")?.try_into_string()?;
+        let single_file = dict.get_key("length")
+            .and_then(|v| v.try_into_int())
+            .map(|l| MetainfoFile { length: l, path: Vec::new() });
+
+        let files: = match single_file {
+            Ok(single_file) => vec![single_file],
+            err => {
+                dict.get_key("files")?.try_into_list()?.into_iter().map(|f| MetainfoFile::bdecode(&f)).collect()?
+            },
+        };
+
 
         Ok(MetainfoInfo {
             name,
-            info: MetainfoInfo::bdecode(info)?,
+            piece_length,
+            pieces,
+            files
         })
     }
 }
 
 #[derive(Debug)]
 struct MetainfoFile {
-    length: u64,
-    path: Box<[String]>,
+    length: i64,
+    path: Vec<String>,
+}
+
+impl BDecode for MetainfoFile {
+    fn bdecode(benc: &BencodedValue) -> Result<Self, String> {
+        unimplemented!()
+    }
 }

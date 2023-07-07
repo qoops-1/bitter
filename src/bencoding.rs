@@ -4,8 +4,8 @@ use std::{collections::HashMap, num::ParseIntError, io::{Cursor, SeekFrom, Seek}
 pub enum BencodedValue {
     BencodedInt(i64),
     BencodedStr(String),
-    BencodedList(Box<[BencodedValue]>),
-    BencodedDict(HashMap<String, BencodedValue>),
+    BencodedList(Vec<BencodedValue>),
+    BencodedDict(BencodedDict),
 }
 
 impl BencodedValue {
@@ -16,7 +16,7 @@ impl BencodedValue {
         }
     }
 
-    pub fn try_into_dict(self) -> Result<HashMap<String, BencodedValue>, String> {
+    pub fn try_into_dict(self) -> Result<BencodedDict, String> {
         match self {
             BencodedValue::BencodedDict(d) => Ok(d),
             _ => Err("not a dict".to_owned()),
@@ -30,7 +30,7 @@ impl BencodedValue {
         }
     }
 
-    pub fn try_into_list(self) -> Result<Box<[BencodedValue]>, String> {
+    pub fn try_into_list(self) -> Result<Vec<BencodedValue>, String> {
         match self {
             BencodedValue::BencodedList(l) => Ok(l),
             _ => Err("not a list".to_owned()),
@@ -38,6 +38,15 @@ impl BencodedValue {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct BencodedDict(HashMap<String, BencodedValue>);
+
+impl BencodedDict {
+    /// Returns next key 
+    pub fn get_key(&self, key: &str) -> Result<&BencodedValue, String> {
+        self.0.get(key).ok_or(format!("key {} not found", key))
+    }
+}
 pub trait BDecode: Sized {
     fn bdecode(s: &BencodedValue) -> Result<Self, String>;
 }
@@ -46,17 +55,18 @@ pub trait BDecode: Sized {
 
 pub fn bdecode_any(s: &mut Cursor<&str>) -> Result<BencodedValue, String> {
     bdecode_int(s).map(BencodedValue::BencodedInt)
-        .or(bdecode_str(s).map(BencodedValue::BencodedStr))
         .or(bdecode_dict(s).map(BencodedValue::BencodedDict))
         .or(bdecode_list(s).map(BencodedValue::BencodedList))
+        .or(bdecode_str(s).map(BencodedValue::BencodedStr))
 }
 
 pub fn bdecode_int(s: &mut Cursor<&str>) -> Result<i64, String> {
     let ascii_bytes = s.get_ref().as_bytes();
-    let cur_pos = s.stream_position().map_err(|e| e.to_string())? as usize;
-    if cur_pos == ascii_bytes.len() || ascii_bytes[cur_pos] != b'i' {
-        return Err("not an integer".to_owned());
+    
+    if !first_char_matches(s, b'i'){
+        return Err("not an int".to_owned());
     }
+    let cur_pos = s.stream_position().unwrap() as usize;
     let number_end = ascii_bytes[cur_pos..].iter().position(|c| *c == b'e').ok_or("end of integer not found")?;
     
     s.seek(SeekFrom::Current(number_end as i64)).map_err(|e| e.to_string())?;
@@ -65,14 +75,12 @@ pub fn bdecode_int(s: &mut Cursor<&str>) -> Result<i64, String> {
         .map_err(|parse_err: ParseIntError| parse_err.to_string())
 }
 
-pub fn bdecode_dict(s: &mut Cursor<&str>) -> Result<HashMap<String, BencodedValue>, String> {
-    let mut map: HashMap<String, BencodedValue> = HashMap::new();
-    let ascii_bytes = s.get_ref().as_bytes();
-    let cur_pos = s.stream_position().map_err(|e| e.to_string())? as usize;
-    if cur_pos == ascii_bytes.len() || ascii_bytes[cur_pos] != b'd' {
+pub fn bdecode_dict(s: &mut Cursor<&str>) -> Result<BencodedDict, String> {
+    if !first_char_matches(s, b'd') {
         return Err("not a dict".to_owned());
     }
-    s.seek(SeekFrom::Current(1)).map_err(|e| e.to_string())?;
+    let mut map: HashMap<String, BencodedValue> = HashMap::new();
+
     while s.stream_position().unwrap() < s.get_ref().len() as u64 {
         let key = bdecode_str(s)?;
         let value = bdecode_any(s)?;
@@ -81,10 +89,13 @@ pub fn bdecode_dict(s: &mut Cursor<&str>) -> Result<HashMap<String, BencodedValu
         }
         map.insert(key, value);
     }
-    Ok(map)
+    Ok(BencodedDict(map))
 }
 
-pub fn bdecode_list(s: &mut Cursor<&str>) -> Result<Box<[BencodedValue]>, String> {
+pub fn bdecode_list(s: &mut Cursor<&str>) -> Result<Vec<BencodedValue>, String> {
+    if !first_char_matches(s, b'l') {
+        return Err("not a list".to_owned());
+    }
     unimplemented!()
 }
 
@@ -102,6 +113,16 @@ pub fn bdecode_str(s: &mut Cursor<&str>) -> Result<String, String> {
             return Err("string length too long".to_owned());
         }
         Ok(s.get_ref()[len_end + 1..str_end].to_owned())
+}
+
+fn first_char_matches(s: &mut Cursor<&str>, c: u8) -> bool {
+    let ascii_bytes = s.get_ref().as_bytes();
+    // Err is impossible for Cursor
+    let cur_pos = s.stream_position().unwrap() as usize;
+
+    // I don't care about int64 overflow
+    s.seek(SeekFrom::Current(1)).unwrap();
+    return cur_pos != ascii_bytes.len() && ascii_bytes[cur_pos] == c
 }
 
 #[cfg(test)]
