@@ -40,28 +40,28 @@ pub enum BencodedValue<'a> {
 }
 
 impl<'a> BencodedValue<'a> {
-    pub fn try_into_string(self) -> Result<&'a str, ParsingError<'a>> {
+    pub fn try_into_string(&self) -> Result<&'a str, ParsingError<'a>> {
         match self {
             BencodedValue::BencodedStr(s) => Ok(s),
             _ => Err(ParsingError::new("not a string")),
         }
     }
 
-    pub fn try_into_dict(self) -> ParsingResult<'a, BencodedDict<'a>> {
+    pub fn try_into_dict(&self) -> ParsingResult<'a, &BencodedDict<'a>> {
         match self {
             BencodedValue::BencodedDict(d) => Ok(d),
             _ => Err(ParsingError::new("not a dict")),
         }
     }
 
-    pub fn try_into_int(self) -> Result<i64, ParsingError<'a>> {
+    pub fn try_into_int(&self) -> Result<&i64, ParsingError<'a>> {
         match self {
             BencodedValue::BencodedInt(i) => Ok(i),
             _ => Err(ParsingError::new("not an int")),
         }
     }
 
-    pub fn try_into_list(self) -> Result<Vec<BencodedValue<'a>>, ParsingError<'a>> {
+    pub fn try_into_list(&self) -> Result<&Vec<BencodedValue<'a>>, ParsingError<'a>> {
         match self {
             BencodedValue::BencodedList(l) => Ok(l),
             _ => Err(ParsingError::new("not a list")),
@@ -74,7 +74,7 @@ pub struct BencodedDict<'a>(HashMap<&'a str, BencodedValue<'a>>);
 
 impl<'a> BencodedDict<'a> {
     /// Returns next key
-    pub fn get_key(&self, key: &'a str) -> Result<&BencodedValue, ParsingError> {
+    pub fn get_key(&self, key: &'a str) -> Result<&BencodedValue<'a>, ParsingError<'a>> {
         self.0
             .get(key)
             .ok_or(ParsingError::new_owned(format!("key \"{key}\" not found")))
