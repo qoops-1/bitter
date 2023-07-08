@@ -14,7 +14,7 @@ struct Metainfo {
     info: MetainfoInfo,
 }
 
-fn bdecode<T : BDecode>(s: &str) -> Result<T, String> {
+fn bdecode<'a, T: BDecode>(s: &'a str) -> ParsingResult<'a, T> {
     let mut c = Cursor::new(s);
     let bencoded = bdecode_any(&mut c)?;
 
@@ -22,9 +22,9 @@ fn bdecode<T : BDecode>(s: &str) -> Result<T, String> {
 }
 
 impl BDecode for Metainfo {
-    fn bdecode(benc: &BencodedValue) -> Result<Self, String> {
+    fn bdecode<'a>(benc: &BencodedValue<'a>) -> ParsingResult<'a, Self> {
         let dict = benc.try_into_dict()?;
-        let announce = dict.get_key("announce")?.try_into_string()?;
+        let announce = dict.get_key("announce")?.try_into_string()?.to_owned();
         let info = dict.get_key("info")?;
 
         Ok(Metainfo {
@@ -43,28 +43,34 @@ struct MetainfoInfo {
 }
 
 impl BDecode for MetainfoInfo {
-    fn bdecode(benc: &BencodedValue) -> Result<Self, String> {
+    fn bdecode<'a>(benc: &BencodedValue<'a>) -> ParsingResult<'a, Self> {
         let dict = benc.try_into_dict()?;
-        let name = dict.get_key("name")?.try_into_string()?;
+        let name = dict.get_key("name")?.try_into_string()?.to_owned();
         let piece_length = dict.get_key("piece_length")?.try_into_int()?;
-        let pieces = dict.get_key("pieces")?.try_into_string()?;
-        let single_file = dict.get_key("length")
+        let pieces = dict.get_key("pieces")?.try_into_string()?.to_owned();
+        let single_file = dict
+            .get_key("length")
             .and_then(|v| v.try_into_int())
-            .map(|l| MetainfoFile { length: l, path: Vec::new() });
+            .map(|l| MetainfoFile {
+                length: l,
+                path: Vec::new(),
+            });
 
-        let files: = match single_file {
+        let files = match single_file {
             Ok(single_file) => vec![single_file],
-            err => {
-                dict.get_key("files")?.try_into_list()?.into_iter().map(|f| MetainfoFile::bdecode(&f)).collect()?
-            },
+            err => dict
+                .get_key("files")?
+                .try_into_list()?
+                .into_iter()
+                .map(|f| MetainfoFile::bdecode(&f))
+                .collect::<ParsingResult<Vec<_>>>()?,
         };
-
 
         Ok(MetainfoInfo {
             name,
             piece_length,
             pieces,
-            files
+            files,
         })
     }
 }
@@ -76,7 +82,7 @@ struct MetainfoFile {
 }
 
 impl BDecode for MetainfoFile {
-    fn bdecode(benc: &BencodedValue) -> Result<Self, String> {
+    fn bdecode<'a>(benc: &BencodedValue<'a>) -> ParsingResult<'a, Self> {
         unimplemented!()
     }
 }

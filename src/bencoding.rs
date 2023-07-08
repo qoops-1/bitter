@@ -1,118 +1,177 @@
-use std::{collections::HashMap, num::ParseIntError, io::{Cursor, SeekFrom, Seek}};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    error::Error,
+    fmt,
+    fmt::Display,
+    io::{Cursor, Seek, SeekFrom},
+    num::ParseIntError,
+};
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum BencodedValue {
-    BencodedInt(i64),
-    BencodedStr(String),
-    BencodedList(Vec<BencodedValue>),
-    BencodedDict(BencodedDict),
+#[derive(Debug)]
+pub struct ParsingError<'a>(Cow<'a, str>);
+
+impl<'a> ParsingError<'a> {
+    pub fn new(msg: &str) -> ParsingError {
+        ParsingError(Cow::Borrowed(msg))
+    }
+
+    pub fn new_owned(msg: String) -> ParsingError<'a> {
+        ParsingError(Cow::Owned(msg))
+    }
 }
 
-impl BencodedValue {
-    pub fn try_into_string(self) -> Result<String, String> {
+impl<'a> Display for ParsingError<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl<'a> Error for ParsingError<'a> {}
+
+pub type ParsingResult<'a, T> = Result<T, ParsingError<'a>>;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum BencodedValue<'a> {
+    BencodedInt(i64),
+    BencodedStr(&'a str),
+    BencodedList(Vec<BencodedValue<'a>>),
+    BencodedDict(BencodedDict<'a>),
+}
+
+impl<'a> BencodedValue<'a> {
+    pub fn try_into_string(self) -> Result<&'a str, ParsingError<'a>> {
         match self {
             BencodedValue::BencodedStr(s) => Ok(s),
-            _ => Err("not a string".to_owned()),
+            _ => Err(ParsingError::new("not a string")),
         }
     }
 
-    pub fn try_into_dict(self) -> Result<BencodedDict, String> {
+    pub fn try_into_dict(self) -> ParsingResult<'a, BencodedDict<'a>> {
         match self {
             BencodedValue::BencodedDict(d) => Ok(d),
-            _ => Err("not a dict".to_owned()),
+            _ => Err(ParsingError::new("not a dict")),
         }
     }
 
-    pub fn try_into_int(self) -> Result<i64, String> {
+    pub fn try_into_int(self) -> Result<i64, ParsingError<'a>> {
         match self {
             BencodedValue::BencodedInt(i) => Ok(i),
-            _ => Err("not an int".to_owned()),
+            _ => Err(ParsingError::new("not an int")),
         }
     }
 
-    pub fn try_into_list(self) -> Result<Vec<BencodedValue>, String> {
+    pub fn try_into_list(self) -> Result<Vec<BencodedValue<'a>>, ParsingError<'a>> {
         match self {
             BencodedValue::BencodedList(l) => Ok(l),
-            _ => Err("not a list".to_owned()),
+            _ => Err(ParsingError::new("not a list")),
         }
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct BencodedDict(HashMap<String, BencodedValue>);
+pub struct BencodedDict<'a>(HashMap<&'a str, BencodedValue<'a>>);
 
-impl BencodedDict {
-    /// Returns next key 
-    pub fn get_key(&self, key: &str) -> Result<&BencodedValue, String> {
-        self.0.get(key).ok_or(format!("key {} not found", key))
+impl<'a> BencodedDict<'a> {
+    /// Returns next key
+    pub fn get_key(&self, key: &'a str) -> Result<&BencodedValue, ParsingError> {
+        self.0
+            .get(key)
+            .ok_or(ParsingError::new_owned(format!("key \"{key}\" not found")))
     }
 }
 pub trait BDecode: Sized {
-    fn bdecode(s: &BencodedValue) -> Result<Self, String>;
+    fn bdecode<'a>(s: &BencodedValue<'a>) -> ParsingResult<'a, Self>;
 }
 
 // Some standard type implementations
 
-pub fn bdecode_any(s: &mut Cursor<&str>) -> Result<BencodedValue, String> {
-    bdecode_int(s).map(BencodedValue::BencodedInt)
+pub fn bdecode_any<'a>(s: &mut Cursor<&'a str>) -> ParsingResult<'a, BencodedValue<'a>> {
+    bdecode_int(s)
+        .map(BencodedValue::BencodedInt)
         .or(bdecode_dict(s).map(BencodedValue::BencodedDict))
         .or(bdecode_list(s).map(BencodedValue::BencodedList))
         .or(bdecode_str(s).map(BencodedValue::BencodedStr))
 }
 
-pub fn bdecode_int(s: &mut Cursor<&str>) -> Result<i64, String> {
+pub fn bdecode_int<'a>(s: &mut Cursor<&'a str>) -> ParsingResult<'a, i64> {
     let ascii_bytes = s.get_ref().as_bytes();
-    
-    if !first_char_matches(s, b'i'){
-        return Err("not an int".to_owned());
+
+    if !first_char_matches(s, b'i') {
+        return Err(ParsingError::new("not an int"));
     }
     let cur_pos = s.stream_position().unwrap() as usize;
-    let number_end = ascii_bytes[cur_pos..].iter().position(|c| *c == b'e').ok_or("end of integer not found")?;
-    
-    s.seek(SeekFrom::Current(number_end as i64)).map_err(|e| e.to_string())?;
+    let number_end = ascii_bytes[cur_pos..]
+        .iter()
+        .position(|c| *c == b'e')
+        .ok_or(ParsingError::new("end of integer not found"))?;
+
+    s.seek(SeekFrom::Current(number_end as i64))
+        .map_err(|e| ParsingError::new_owned(e.to_string()))?;
     s.get_ref()[1..number_end]
-        .parse()
-        .map_err(|parse_err: ParseIntError| parse_err.to_string())
+        .parse::<i64>()
+        .map_err(|e| ParsingError::new_owned(e.to_string()))
 }
 
-pub fn bdecode_dict(s: &mut Cursor<&str>) -> Result<BencodedDict, String> {
+pub fn bdecode_dict<'a>(s: &mut Cursor<&'a str>) -> ParsingResult<'a, BencodedDict<'a>> {
     if !first_char_matches(s, b'd') {
-        return Err("not a dict".to_owned());
+        return Err(ParsingError::new("not a dict"));
     }
-    let mut map: HashMap<String, BencodedValue> = HashMap::new();
+    let mut map: HashMap<&'a str, BencodedValue> = HashMap::new();
 
     while s.stream_position().unwrap() < s.get_ref().len() as u64 {
+        if first_char_matches(s, b'e') {
+            return Ok(BencodedDict(map));
+        }
         let key = bdecode_str(s)?;
         let value = bdecode_any(s)?;
         if map.contains_key(&key) {
-            return Err(format!("Duplicate key \"{}\" in dict", key));
+            return Err(ParsingError::new_owned(format!(
+                "Duplicate key \"{key}\" in dict"
+            )));
         }
         map.insert(key, value);
     }
-    Ok(BencodedDict(map))
+    Err(ParsingError::new("unterminated dict"))
 }
 
-pub fn bdecode_list(s: &mut Cursor<&str>) -> Result<Vec<BencodedValue>, String> {
+pub fn bdecode_list<'a>(s: &mut Cursor<&'a str>) -> ParsingResult<'a, Vec<BencodedValue<'a>>> {
     if !first_char_matches(s, b'l') {
-        return Err("not a list".to_owned());
+        return Err(ParsingError::new("not a list"));
     }
-    unimplemented!()
+
+    let mut list = Vec::new();
+
+    while s.stream_position().unwrap() < s.get_ref().len() as u64 {
+        if first_char_matches(s, b'e') {
+            return Ok(list);
+        }
+        let item = bdecode_any(s)?;
+        list.push(item);
+    }
+    Err(ParsingError::new("unterminated dict"))
 }
 
-pub fn bdecode_str(s: &mut Cursor<&str>) -> Result<String, String> {
-        let ascii_bytes = s.get_ref().as_bytes();
-        let cur_pos = s.stream_position().map_err(|e| e.to_string())? as usize;
-        
-        let len_end = ascii_bytes[cur_pos..].iter().position(|c| *c == b':').ok_or("length prefix not found".to_owned())? + cur_pos;
-        let strlen: usize = s.get_ref()[cur_pos..len_end]
-            .parse()
-            .map_err(|parse_err: ParseIntError| parse_err.to_string())?;
+pub fn bdecode_str<'a>(s: &mut Cursor<&'a str>) -> ParsingResult<'a, &'a str> {
+    let ascii_bytes = s.get_ref().as_bytes();
+    let cur_pos = s
+        .stream_position()
+        .map_err(|e| ParsingError::new_owned(e.to_string()))? as usize;
 
-        let str_end = len_end + strlen + 1;
-        if ascii_bytes.len() < str_end {
-            return Err("string length too long".to_owned());
-        }
-        Ok(s.get_ref()[len_end + 1..str_end].to_owned())
+    let len_end = ascii_bytes[cur_pos..]
+        .iter()
+        .position(|c| *c == b':')
+        .ok_or(ParsingError::new("length prefix not found"))?
+        + cur_pos;
+    let strlen: usize = s.get_ref()[cur_pos..len_end]
+        .parse()
+        .map_err(|parse_err: ParseIntError| ParsingError::new_owned(parse_err.to_string()))?;
+
+    let str_end = len_end + strlen + 1;
+    if ascii_bytes.len() < str_end {
+        return Err(ParsingError::new("string length too long"));
+    }
+    Ok(&s.get_ref()[len_end + 1..str_end])
 }
 
 fn first_char_matches(s: &mut Cursor<&str>, c: u8) -> bool {
@@ -122,7 +181,7 @@ fn first_char_matches(s: &mut Cursor<&str>, c: u8) -> bool {
 
     // I don't care about int64 overflow
     s.seek(SeekFrom::Current(1)).unwrap();
-    return cur_pos != ascii_bytes.len() && ascii_bytes[cur_pos] == c
+    return cur_pos != ascii_bytes.len() && ascii_bytes[cur_pos] == c;
 }
 
 #[cfg(test)]
@@ -148,7 +207,10 @@ mod tests {
     fn bdecode_str_test() {
         assert_eq!("hello", bdecode_str(&mut Cursor::new("5:hello")).unwrap());
         assert_eq!(String::new(), bdecode_str(&mut Cursor::new("0:")).unwrap());
-        assert_eq!("hello:friends", bdecode_str(&mut Cursor::new("13:hello:friends")).unwrap());
+        assert_eq!(
+            "hello:friends",
+            bdecode_str(&mut Cursor::new("13:hello:friends")).unwrap()
+        );
         assert_eq!("1", bdecode_str(&mut Cursor::new("1:1")).unwrap());
     }
 
