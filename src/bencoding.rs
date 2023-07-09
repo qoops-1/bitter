@@ -104,13 +104,14 @@ pub fn bdecode_int<'a>(s: &mut Cursor<&'a str>) -> ParsingResult<'a, i64> {
     let number_end = ascii_bytes[cur_pos..]
         .iter()
         .position(|c| *c == b'e')
-        .ok_or(ParsingError::new("end of integer not found"))?;
+        .ok_or(ParsingError::new("end of integer not found"))? + cur_pos;
 
-    s.seek(SeekFrom::Current(number_end as i64))
-        .map_err(|e| ParsingError::new_owned(e.to_string()))?;
-    s.get_ref()[1..number_end]
+    s.seek(SeekFrom::Start(number_end as u64 + 1)).unwrap();
+    let len_str = &s.get_ref()[cur_pos..number_end];
+
+    len_str
         .parse::<i64>()
-        .map_err(|e| ParsingError::new_owned(e.to_string()))
+        .map_err(|e| ParsingError::new_owned(format!("{}: \"{}\"", e.to_string(), len_str)))
 }
 
 pub fn bdecode_dict<'a>(s: &mut Cursor<&'a str>) -> ParsingResult<'a, BencodedDict<'a>> {
@@ -149,28 +150,28 @@ pub fn bdecode_list<'a>(s: &mut Cursor<&'a str>) -> ParsingResult<'a, Vec<Bencod
         let item = bdecode_any(s)?;
         list.push(item);
     }
-    Err(ParsingError::new("unterminated dict"))
+    Err(ParsingError::new("unterminated list"))
 }
 
 pub fn bdecode_str<'a>(s: &mut Cursor<&'a str>) -> ParsingResult<'a, &'a str> {
     let ascii_bytes = s.get_ref().as_bytes();
-    let cur_pos = s
-        .stream_position()
-        .map_err(|e| ParsingError::new_owned(e.to_string()))? as usize;
+    let cur_pos = s.stream_position().unwrap() as usize;
 
     let len_end = ascii_bytes[cur_pos..]
         .iter()
         .position(|c| *c == b':')
         .ok_or(ParsingError::new("length prefix not found"))?
         + cur_pos;
-    let strlen: usize = s.get_ref()[cur_pos..len_end]
+    let len_str = &s.get_ref()[cur_pos..len_end];
+    let strlen: usize = len_str
         .parse()
-        .map_err(|parse_err: ParseIntError| ParsingError::new_owned(parse_err.to_string()))?;
+        .map_err(|parse_err: ParseIntError| ParsingError::new_owned(format!("{}: \"{}\"", parse_err.to_string(), len_str)))?;
 
     let str_end = len_end + strlen + 1;
     if ascii_bytes.len() < str_end {
         return Err(ParsingError::new("string length too long"));
     }
+    s.seek(SeekFrom::Start(str_end as u64)).unwrap();
     Ok(&s.get_ref()[len_end + 1..str_end])
 }
 
@@ -178,20 +179,36 @@ fn first_char_matches(s: &mut Cursor<&str>, c: u8) -> bool {
     let ascii_bytes = s.get_ref().as_bytes();
     // Err is impossible for Cursor
     let cur_pos = s.stream_position().unwrap() as usize;
+    let have_match = cur_pos != ascii_bytes.len() && ascii_bytes[cur_pos] == c;
 
-    // I don't care about int64 overflow
-    s.seek(SeekFrom::Current(1)).unwrap();
-    return cur_pos != ascii_bytes.len() && ascii_bytes[cur_pos] == c;
+    if have_match
+    {
+        // I don't care about int64 overflow
+        s.seek(SeekFrom::Current(1)).unwrap();
+    }
+    return have_match;
 }
 
 #[cfg(test)]
 mod tests {
+
+    fn assert_finished(c: &Cursor<&str>) {
+        assert_eq!(c.get_ref().len(), c.position() as usize);
+    }
     use super::*;
     #[test]
     fn bdecode_int_test() {
-        assert_eq!(0, bdecode_int(&mut Cursor::new("i0e")).unwrap());
-        assert_eq!(-1, bdecode_int(&mut Cursor::new("i-1e")).unwrap());
-        assert_eq!(342, bdecode_int(&mut Cursor::new("i342e")).unwrap())
+        let mut c = Cursor::new("i0e");
+        assert_eq!(0, bdecode_int(&mut c).unwrap());
+        assert_finished(&c);
+
+        c = Cursor::new("i-1e");
+        assert_eq!(-1, bdecode_int(&mut c).unwrap());
+        assert_finished(&c);
+
+        c = Cursor::new("i342e");
+        assert_eq!(342, bdecode_int(&mut c).unwrap());
+        assert_finished(&c);
     }
 
     #[test]
@@ -205,13 +222,21 @@ mod tests {
 
     #[test]
     fn bdecode_str_test() {
-        assert_eq!("hello", bdecode_str(&mut Cursor::new("5:hello")).unwrap());
-        assert_eq!(String::new(), bdecode_str(&mut Cursor::new("0:")).unwrap());
-        assert_eq!(
-            "hello:friends",
-            bdecode_str(&mut Cursor::new("13:hello:friends")).unwrap()
-        );
-        assert_eq!("1", bdecode_str(&mut Cursor::new("1:1")).unwrap());
+        let mut c = Cursor::new("5:hello");
+        assert_eq!("hello", bdecode_str(&mut c).unwrap());
+        assert_finished(&c);
+
+        c = Cursor::new("0:");
+        assert_eq!(String::new(), bdecode_str(&mut c).unwrap());
+        assert_finished(&c);
+
+        c = Cursor::new("13:hello:friends");
+        assert_eq!("hello:friends", bdecode_str(&mut c).unwrap());
+        assert_finished(&c);
+
+        c = Cursor::new("1:1");
+        assert_eq!("1", bdecode_str(&mut c).unwrap());
+        assert_finished(&c);
     }
 
     #[test]
@@ -222,5 +247,18 @@ mod tests {
         assert!(bdecode_str(&mut Cursor::new("")).is_err());
         assert!(bdecode_str(&mut Cursor::new(":")).is_err());
         assert!(bdecode_str(&mut Cursor::new("hello:hello")).is_err());
+    }
+
+    #[test]
+    fn bdecode_list_test() {
+        use BencodedValue::*;
+
+        let mut c = Cursor::new("l4:spam4:eggse");
+        assert_eq!(bdecode_list(&mut c).unwrap(), vec![BencodedStr("spam"), BencodedStr("eggs")]);
+        assert_finished(&c);
+
+        c = Cursor::new("li342ei-1ee");
+        assert_eq!(bdecode_list(&mut c).unwrap(), vec![BencodedInt(342), BencodedInt(-1)]);
+        assert_finished(&c);
     }
 }
