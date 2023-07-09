@@ -252,13 +252,44 @@ mod tests {
     #[test]
     fn bdecode_list_test() {
         use BencodedValue::*;
+        let l1 = "l4:spam4:eggse";
+        let l2 = "li342ei-1ee";
 
-        let mut c = Cursor::new("l4:spam4:eggse");
+        let mut c = Cursor::new(l1);
         assert_eq!(bdecode_list(&mut c).unwrap(), vec![BencodedStr("spam"), BencodedStr("eggs")]);
         assert_finished(&c);
 
-        c = Cursor::new("li342ei-1ee");
+        c = Cursor::new(l2);
         assert_eq!(bdecode_list(&mut c).unwrap(), vec![BencodedInt(342), BencodedInt(-1)]);
+        assert_finished(&c);
+
+        c = Cursor::new("le");
+        assert_eq!(bdecode_list(&mut c).unwrap(), vec![]);
+        assert_finished(&c);
+        
+        let l_of_l = format!("l{l1}{l2}e");
+        c = Cursor::new(&l_of_l);
+        assert_eq!(bdecode_list(&mut c).unwrap(), vec![BencodedList(vec![BencodedStr("spam"), BencodedStr("eggs")]), BencodedList(vec![BencodedInt(342), BencodedInt(-1)])]);
+        assert_finished(&c);
+    }
+
+    #[test]
+    fn bdecode_dict_test() {
+        use BencodedValue as BVal;
+        let d1 = "d3:cow3:moo4:spam4:eggse";
+        let d2 = "d4:spaml1:a1:bee";
+
+
+        let mut c = Cursor::new(d1);
+        assert_eq!(bdecode_dict(&mut c).unwrap(), BencodedDict(HashMap::from([("cow", BVal::BencodedStr("moo")), ("spam", BVal::BencodedStr("eggs"))])));
+        assert_finished(&c);
+
+        c = Cursor::new(d2);
+        assert_eq!(bdecode_dict(&mut c).unwrap(), BencodedDict(HashMap::from([("spam", BVal::BencodedList(vec![BVal::BencodedStr("a"), BVal::BencodedStr("b")]))])));
+        assert_finished(&c);
+
+        c = Cursor::new("de");
+        assert_eq!(bdecode_dict(&mut c).unwrap(), BencodedDict(HashMap::new()));
         assert_finished(&c);
     }
 }
