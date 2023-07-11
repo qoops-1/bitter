@@ -67,7 +67,7 @@ impl BDecode for MetainfoInfo {
     fn bdecode<'a>(benc: &BencodedValue<'a>) -> ParsingResult<'a, Self> {
         let dict = benc.try_into_dict()?;
         let name = dict.get_key("name")?.try_into_string()?.to_owned();
-        let piece_length = dict.get_key("piece_length")?.try_into_int()?.to_owned();
+        let piece_length = dict.get_key("piece length")?.try_into_int()?.to_owned();
         let pieces = dict.get_key("pieces")?.try_into_string()?.to_owned();
         let single_file = dict
             .get_key("length")
