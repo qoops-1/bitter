@@ -59,7 +59,7 @@ impl BDecode for Metainfo {
 struct MetainfoInfo {
     name: String,
     piece_length: i64,
-    pieces: String,
+    pieces: Vec<u8>,
     files: Vec<MetainfoFile>,
 }
 
@@ -68,7 +68,7 @@ impl BDecode for MetainfoInfo {
         let dict = benc.try_into_dict()?;
         let name = dict.get_key("name")?.try_into_string()?.to_owned();
         let piece_length = dict.get_key("piece length")?.try_into_int()?.to_owned();
-        let pieces = dict.get_key("pieces")?.try_into_string()?.to_owned();
+        let pieces: Vec<u8> = dict.get_key("pieces")?.try_into_bytestring()?.to_owned();
         let single_file = dict
             .get_key("length")
             .and_then(|v| v.try_into_int())
