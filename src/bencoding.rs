@@ -1,9 +1,9 @@
+use crate::utils::{BitterMistake, BitterResult};
 use std::{
     collections::HashMap,
     io::{Cursor, Seek, SeekFrom},
     str::from_utf8,
 };
-use crate::utils::{BitterMistake, BitterResult};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum BencodedValue<'a> {
@@ -13,7 +13,7 @@ pub enum BencodedValue<'a> {
     BencodedDict(BencodedDict<'a>),
 }
 
-impl<'a> BencodedValue <'a> {
+impl<'a> BencodedValue<'a> {
     pub fn try_into_string(&self) -> BitterResult<&'a str> {
         self.try_into_bytestring()
             .and_then(|bytes| from_utf8(bytes).map_err(BitterMistake::new_err))
@@ -53,7 +53,7 @@ pub struct BencodedDict<'a>(HashMap<&'a [u8], BencodedValue<'a>>);
 
 impl<'a> BencodedDict<'a> {
     /// Returns next key
-    pub fn get_key(&self, key: &'a str) -> Result<&BencodedValue, BitterMistake> {
+    pub fn get_key(&self, key: &str) -> BitterResult<&BencodedValue<'a>> {
         self.0
             .get(key.as_bytes())
             .ok_or(BitterMistake::new_owned(format!("key {key} not found")))
@@ -75,7 +75,7 @@ pub fn bdecode<T: BDecode>(s: &[u8]) -> BitterResult<T> {
 
 // Some standard type implementations
 
-pub fn bdecode_any<'a> (buf: &mut Cursor<&'a [u8]>) -> BitterResult<BencodedValue<'a>> {
+pub fn bdecode_any<'a>(buf: &mut Cursor<&'a [u8]>) -> BitterResult<BencodedValue<'a>> {
     bdecode_int(buf)
         .map(BencodedValue::BencodedInt)
         .or_else(|_| bdecode_dict(buf).map(BencodedValue::BencodedDict))

@@ -1,14 +1,18 @@
-use std::{net::SocketAddr, fmt, time::Duration, str, io::Read};
-use rand::{thread_rng, Rng};
 use rand::distributions::Alphanumeric;
+use rand::{thread_rng, Rng};
+use std::{fmt, io::Read, net::SocketAddr, str, time::Duration};
 use ureq;
 
-use crate::{utils::{urlencode, BitterMistake, BitterResult}, bencoding::{BDecode, BencodedValue, bdecode}, metainfo::Metainfo};
+use crate::{
+    bencoding::{bdecode, BDecode, BencodedValue},
+    metainfo::Metainfo,
+    utils::{urlencode, BitterMistake, BitterResult},
+};
 const MAX_MSG_SIZE: u64 = 1000 * 1000;
 
 pub fn download(metainfo: Metainfo) {
     let sched = Downloader::new();
-    
+
     sched.run(metainfo);
 }
 
@@ -30,8 +34,7 @@ impl Downloader {
             peers: Vec::new(),
         }
     }
-    fn run<'a>(&self, metainfo: Metainfo) -> BitterResult<()> {
-
+    fn run(&self, metainfo: Metainfo) -> BitterResult<()> {
         unimplemented!()
     }
 }
@@ -42,7 +45,6 @@ enum AnnounceEvent {
     Stopped,
     Empty,
 }
-
 
 impl fmt::Display for AnnounceEvent {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -71,7 +73,7 @@ struct Peer {
 }
 
 impl BDecode for Peer {
-    fn bdecode<'a>(benc: &BencodedValue<'a>) -> BitterResult<Self> {
+    fn bdecode(benc: &BencodedValue) -> BitterResult<Self> {
         unimplemented!()
     }
 }
@@ -98,9 +100,12 @@ fn announce(url: String, req: AnnounceRequest) -> BitterResult<AnnouncePeers> {
         .call()
         .map_err(BitterMistake::new_err)
         .and_then(|resp: ureq::Response| {
-            resp.into_reader().take(MAX_MSG_SIZE).read_to_end(&mut buf).map_err(BitterMistake::new_err)
+            resp.into_reader()
+                .take(MAX_MSG_SIZE)
+                .read_to_end(&mut buf)
+                .map_err(BitterMistake::new_err)
         })?;
-    
+
     let resp = bdecode::<AnnounceResponse>(&buf)?;
 
     match resp {
@@ -119,22 +124,25 @@ enum AnnounceResponse {
     Peers(AnnouncePeers),
 }
 
-
-
 impl BDecode for AnnounceResponse {
-    fn bdecode<'a>(benc: &BencodedValue<'a>) -> BitterResult<Self> {
+    fn bdecode(benc: &BencodedValue) -> BitterResult<Self> {
         let dict = benc.try_into_dict()?;
 
         let fail_reason = match dict.get_key("failure reason") {
             Ok(BencodedValue::BencodedStr(bytes)) => match str::from_utf8(bytes) {
-                Err(e) => return Result::Err(BitterMistake::new_owned(format!("failure reason parsing error: {}", e.to_string()))),
+                Err(e) => {
+                    return Result::Err(BitterMistake::new_owned(format!(
+                        "failure reason parsing error: {}",
+                        e.to_string()
+                    )))
+                }
                 Ok(k) => Ok(AnnounceResponse::Failure(k.to_owned())),
-            }
+            },
             Err(err) => Err(err),
-            _ => panic!("get_key cannot return non-string") // TODO: fix this. this can actually return non-string
+            _ => panic!("get_key cannot return non-string"), // TODO: fix this. this can actually return non-string
         };
         if fail_reason.is_ok() {
-            return fail_reason
+            return fail_reason;
         }
 
         let peers: Vec<Peer> = dict
@@ -144,8 +152,9 @@ impl BDecode for AnnounceResponse {
             .map(|v| Peer::bdecode(v))
             .collect::<BitterResult<Vec<_>>>()?;
 
-        let interval = Duration::from_secs(dict.get_key("interval")?.try_into_int()?.unsigned_abs());
+        let interval =
+            Duration::from_secs(dict.get_key("interval")?.try_into_int()?.unsigned_abs());
 
-        Ok(AnnounceResponse::Peers(AnnouncePeers { peers, interval}))
+        Ok(AnnounceResponse::Peers(AnnouncePeers { peers, interval }))
     }
 }
