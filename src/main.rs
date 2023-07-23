@@ -6,6 +6,7 @@ mod metainfo;
 use std::{env, fs, process::exit};
 use crate::metainfo::Metainfo;
 use bencoding::*;
+use download::download;
 
 fn main() {
     let args: Vec<_> = env::args().collect();
@@ -21,11 +22,21 @@ fn main() {
         eprint!("Error opening metadata file {filename}: {e}");
         exit(1)
     });
-    let parsed_file: Metainfo = bdecode(&metafile).unwrap_or_else(|e| {
+    let parsed_metainfo: Metainfo = bdecode(&metafile).unwrap_or_else(|e| {
         eprint!("Error parsing metadata file: {e}");
         exit(1)
     });
     println!("Metadata file:");
-    print!("{:#?}", parsed_file);
+    print!("{:#?}", parsed_metainfo);
+
+    let settings = Settings {
+        port: 6881
+    };
+
+    download(parsed_metainfo, settings).unwrap()
+}
+
+pub struct Settings {
+    pub port: u16,
 }
 

@@ -4,25 +4,27 @@ use std::{fmt, io::Read, net::SocketAddr, str, time::Duration};
 use ureq;
 
 use crate::{
+    Settings,
     bencoding::{bdecode, BDecode, BencodedValue},
     metainfo::Metainfo,
     utils::{urlencode, BitterMistake, BitterResult},
 };
 const MAX_MSG_SIZE: u64 = 1000 * 1000;
 
-pub fn download(metainfo: Metainfo) {
-    let sched = Downloader::new();
+pub fn download(metainfo: Metainfo, settings: Settings) -> BitterResult<()> {
+    let sched = Downloader::new(settings);
 
-    sched.run(metainfo);
+    sched.run(metainfo)
 }
 
 pub struct Downloader {
     peer_id: String,
     peers: Vec<Peer>,
+    settings: Settings,
 }
 
 impl Downloader {
-    fn new() -> Downloader {
+    fn new(settings: Settings) -> Downloader {
         let id: String = thread_rng()
             .sample_iter(&Alphanumeric)
             .take(20)
@@ -32,6 +34,7 @@ impl Downloader {
         Downloader {
             peer_id: id,
             peers: Vec::new(),
+            settings: settings,
         }
     }
     fn run(&self, metainfo: Metainfo) -> BitterResult<()> {
@@ -73,8 +76,20 @@ struct Peer {
 }
 
 impl BDecode for Peer {
+
+}
+
+impl BDecode for Vec<Peer> {
     fn bdecode(benc: &BencodedValue) -> BitterResult<Self> {
-        unimplemented!()
+        match benc {
+            &BencodedValue::BencodedList(peers) => peers.map()
+            &BencodedValue::BencodedStr(bytes) => {
+                let ptr = 0;
+                while ptr + 6 < bytes.len() {
+                    
+                }
+            }
+        }
     }
 }
 
