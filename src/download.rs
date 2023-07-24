@@ -1,5 +1,6 @@
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
+use std::net::{Ipv4Addr, IpAddr, ToSocketAddrs};
 use std::{fmt, io::Read, net::SocketAddr, str, time::Duration};
 use ureq;
 
@@ -71,24 +72,51 @@ struct AnnounceRequest {
 }
 
 struct Peer {
-    peer_id: Vec<u8>,
     addr: SocketAddr,
+    peer_id: Option<Vec<u8>>,
 }
 
 impl BDecode for Peer {
+    fn bdecode(benc: &BencodedValue) -> BitterResult<Self> {
+        let hmap = benc.try_into_dict()?;
+        let peer_id = hmap.get_key("peer id").and_then(|v| v.try_into_bytestring()).ok().map(Vec::from);
+        let port: u16 = *hmap.get_key("port")?.try_into_int()? as u16;
+        let addr = hmap.get_key("ip")?.try_into_string()?;
 
+        let mut sockaddrs = (addr, port).to_socket_addrs().map_err(BitterMistake::new_err)?;
+
+        // taking only the first resolution because peer has only one addr. TODO: improve this later, add multiple addresses to a peer
+        sockaddrs
+            .next()
+            .ok_or(BitterMistake::new_owned(format!("cannot resolve host {}:{}", addr, port)))
+            .map(|saddr| Peer { addr: saddr, peer_id})
+    }
 }
 
 impl BDecode for Vec<Peer> {
     fn bdecode(benc: &BencodedValue) -> BitterResult<Self> {
         match benc {
-            &BencodedValue::BencodedList(peers) => peers.map()
-            &BencodedValue::BencodedStr(bytes) => {
-                let ptr = 0;
+            BencodedValue::BencodedList(peers) => peers.iter().map(Peer::bdecode).collect(),
+            BencodedValue::BencodedStr(bytes) => {
+                let mut peers = Vec::new();
+                let mut ptr = 0;
                 while ptr + 6 < bytes.len() {
-                    
+                    let addr = u32::from_be_bytes(bytes[ptr..ptr+4].try_into().unwrap());
+                    ptr += 4;
+                    let port = u16::from_be_bytes(bytes[ptr..ptr+2].try_into().unwrap());
+                    ptr += 2;
+                    peers.push(Peer { 
+                        addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(addr)), port), 
+                        peer_id: None 
+                    });
                 }
-            }
+                if ptr != bytes.len() {
+                    Err(BitterMistake::new_owned(format!("{} remaining bytes in peers array cannot be parsed into peer", bytes.len() - ptr)))
+                } else {
+                    Ok(peers)
+                }
+            },
+            _ => Err(BitterMistake::new("peer list expected to be a list or string")),
         }
     }
 }
