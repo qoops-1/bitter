@@ -1,8 +1,11 @@
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
+use std::error::Error;
 use std::net::{Ipv4Addr, IpAddr, ToSocketAddrs};
 use std::{fmt, io::Read, net::SocketAddr, str, time::Duration};
 use ureq;
+use tokio;
+use tokio::net::TcpListener;
 
 use crate::{
     Settings,
@@ -12,10 +15,10 @@ use crate::{
 };
 const MAX_MSG_SIZE: u64 = 1000 * 1000;
 
-pub fn download(metainfo: Metainfo, settings: Settings) -> BitterResult<()> {
+pub async fn download(metainfo: Metainfo, settings: Settings) -> BitterResult<()> {
     let sched = Downloader::new(settings);
 
-    sched.run(metainfo)
+    sched.run(metainfo).await
 }
 
 pub struct Downloader {
@@ -38,9 +41,27 @@ impl Downloader {
             settings: settings,
         }
     }
-    fn run(&self, metainfo: Metainfo) -> BitterResult<()> {
+    async fn run(&self, metainfo: Metainfo) -> BitterResult<()> {
+        let server = tokio::spawn(run_server(self.settings));
+
+        let peers = announce(metainfo.announce, AnnounceRequest {
+            info_hash: metainfo.info_hash,
+            peer_id: self.peer_id,
+            port: self.settings.port,
+            uploaded: 0,
+            downloaded: 0,
+            left: 0,
+            event: AnnounceEvent::Started,
+        })?;
+
         unimplemented!()
     }
+}
+
+async fn run_server(settings: Settings) -> BitterResult<()> {
+    let listener = TcpListener::bind((settings.ip, settings.port)).await?;
+
+    unimplemented!()
 }
 
 enum AnnounceEvent {

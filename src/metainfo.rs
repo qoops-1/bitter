@@ -3,8 +3,8 @@ use crate::utils::BitterResult;
 
 #[derive(Debug)]
 pub struct Metainfo {
-    announce: String,
-    info: MetainfoInfo,
+    pub announce: String,
+    pub info: MetainfoInfo,
 }
 
 impl BDecode for Metainfo {
@@ -22,10 +22,10 @@ impl BDecode for Metainfo {
 
 #[derive(Debug)]
 struct MetainfoInfo {
-    name: String,
-    piece_length: i64,
-    pieces: Vec<u8>,
-    files: Vec<MetainfoFile>,
+    pub name: String,
+    pub piece_length: i64,
+    pub pieces: Vec<u8>,
+    pub files: Vec<MetainfoFile>,
 }
 
 impl BDecode for MetainfoInfo {
@@ -63,8 +63,8 @@ impl BDecode for MetainfoInfo {
 
 #[derive(Debug)]
 struct MetainfoFile {
-    length: i64,
-    path: Vec<String>,
+    pub length: i64,
+    pub path: Vec<String>,
 }
 
 impl BDecode for MetainfoFile {
