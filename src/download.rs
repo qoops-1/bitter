@@ -1,17 +1,17 @@
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use std::error::Error;
-use std::net::{Ipv4Addr, IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::{fmt, io::Read, net::SocketAddr, str, time::Duration};
-use ureq;
 use tokio;
 use tokio::net::TcpListener;
+use ureq;
 
 use crate::{
-    Settings,
     bencoding::{bdecode, BDecode, BencodedValue},
     metainfo::Metainfo,
     utils::{urlencode, BitterMistake, BitterResult},
+    Settings,
 };
 const MAX_MSG_SIZE: u64 = 1000 * 1000;
 
@@ -44,15 +44,18 @@ impl Downloader {
     async fn run(&self, metainfo: Metainfo) -> BitterResult<()> {
         let server = tokio::spawn(run_server(self.settings));
 
-        let peers = announce(metainfo.announce, AnnounceRequest {
-            info_hash: metainfo.info_hash,
-            peer_id: self.peer_id,
-            port: self.settings.port,
-            uploaded: 0,
-            downloaded: 0,
-            left: 0,
-            event: AnnounceEvent::Started,
-        })?;
+        let peers = announce(
+            metainfo.announce,
+            AnnounceRequest {
+                info_hash: metainfo.info.hash,
+                peer_id: self.peer_id,
+                port: self.settings.port,
+                uploaded: 0,
+                downloaded: 0,
+                left: 0,
+                event: AnnounceEvent::Started,
+            },
+        )?;
 
         unimplemented!()
     }
@@ -100,17 +103,29 @@ struct Peer {
 impl BDecode for Peer {
     fn bdecode(benc: &BencodedValue) -> BitterResult<Self> {
         let hmap = benc.try_into_dict()?;
-        let peer_id = hmap.get_key("peer id").and_then(|v| v.try_into_bytestring()).ok().map(Vec::from);
-        let port: u16 = *hmap.get_key("port")?.try_into_int()? as u16;
-        let addr = hmap.get_key("ip")?.try_into_string()?;
+        let peer_id = hmap
+            .get_val("peer id")
+            .and_then(|v| v.try_into_bytestring())
+            .ok()
+            .map(Vec::from);
+        let port: u16 = *hmap.get_val("port")?.try_into_int()? as u16;
+        let addr = hmap.get_val("ip")?.try_into_string()?;
 
-        let mut sockaddrs = (addr, port).to_socket_addrs().map_err(BitterMistake::new_err)?;
+        let mut sockaddrs = (addr, port)
+            .to_socket_addrs()
+            .map_err(BitterMistake::new_err)?;
 
         // taking only the first resolution because peer has only one addr. TODO: improve this later, add multiple addresses to a peer
         sockaddrs
             .next()
-            .ok_or(BitterMistake::new_owned(format!("cannot resolve host {}:{}", addr, port)))
-            .map(|saddr| Peer { addr: saddr, peer_id})
+            .ok_or(BitterMistake::new_owned(format!(
+                "cannot resolve host {}:{}",
+                addr, port
+            )))
+            .map(|saddr| Peer {
+                addr: saddr,
+                peer_id,
+            })
     }
 }
 
@@ -122,22 +137,27 @@ impl BDecode for Vec<Peer> {
                 let mut peers = Vec::new();
                 let mut ptr = 0;
                 while ptr + 6 < bytes.len() {
-                    let addr = u32::from_be_bytes(bytes[ptr..ptr+4].try_into().unwrap());
+                    let addr = u32::from_be_bytes(bytes[ptr..ptr + 4].try_into().unwrap());
                     ptr += 4;
-                    let port = u16::from_be_bytes(bytes[ptr..ptr+2].try_into().unwrap());
+                    let port = u16::from_be_bytes(bytes[ptr..ptr + 2].try_into().unwrap());
                     ptr += 2;
-                    peers.push(Peer { 
-                        addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(addr)), port), 
-                        peer_id: None 
+                    peers.push(Peer {
+                        addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(addr)), port),
+                        peer_id: None,
                     });
                 }
                 if ptr != bytes.len() {
-                    Err(BitterMistake::new_owned(format!("{} remaining bytes in peers array cannot be parsed into peer", bytes.len() - ptr)))
+                    Err(BitterMistake::new_owned(format!(
+                        "{} remaining bytes in peers array cannot be parsed into peer",
+                        bytes.len() - ptr
+                    )))
                 } else {
                     Ok(peers)
                 }
-            },
-            _ => Err(BitterMistake::new("peer list expected to be a list or string")),
+            }
+            _ => Err(BitterMistake::new(
+                "peer list expected to be a list or string",
+            )),
         }
     }
 }
@@ -192,7 +212,7 @@ impl BDecode for AnnounceResponse {
     fn bdecode(benc: &BencodedValue) -> BitterResult<Self> {
         let dict = benc.try_into_dict()?;
 
-        let fail_reason = match dict.get_key("failure reason") {
+        let fail_reason = match dict.get_val("failure reason") {
             Ok(BencodedValue::BencodedStr(bytes)) => match str::from_utf8(bytes) {
                 Err(e) => {
                     return Result::Err(BitterMistake::new_owned(format!(
@@ -210,14 +230,14 @@ impl BDecode for AnnounceResponse {
         }
 
         let peers: Vec<Peer> = dict
-            .get_key("peers")?
+            .get_val("peers")?
             .try_into_list()?
             .into_iter()
             .map(|v| Peer::bdecode(v))
             .collect::<BitterResult<Vec<_>>>()?;
 
         let interval =
-            Duration::from_secs(dict.get_key("interval")?.try_into_int()?.unsigned_abs());
+            Duration::from_secs(dict.get_val("interval")?.try_into_int()?.unsigned_abs());
 
         Ok(AnnounceResponse::Peers(AnnouncePeers { peers, interval }))
     }

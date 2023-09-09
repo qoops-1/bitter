@@ -49,14 +49,17 @@ impl<'a> BencodedValue<'a> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct BencodedDict<'a>(HashMap<&'a [u8], BencodedValue<'a>>);
+pub struct BencodedDict<'a>(HashMap<&'a [u8], BencodedValue<'a>>, &'a [u8]);
 
 impl<'a> BencodedDict<'a> {
-    /// Returns next key
-    pub fn get_key(&self, key: &str) -> BitterResult<&BencodedValue<'a>> {
+    pub fn get_val(&self, key: &str) -> BitterResult<&BencodedValue<'a>> {
         self.0
             .get(key.as_bytes())
             .ok_or(BitterMistake::new_owned(format!("key {key} not found")))
+    }
+
+    pub fn get_start_ptr(&self) -> &'a [u8] {
+        self.1
     }
 }
 pub trait BDecode: Sized {
@@ -102,6 +105,8 @@ pub fn bdecode_int(buf: &mut Cursor<&[u8]>) -> BitterResult<i64> {
 }
 
 pub fn bdecode_dict<'a>(buf: &mut Cursor<&'a [u8]>) -> BitterResult<BencodedDict<'a>> {
+    let buf_ptr: &[u8] = buf.get_ref();
+
     if !first_char_matches(buf, b'd') {
         return Err(BitterMistake::new("not a dict"));
     }
@@ -109,7 +114,7 @@ pub fn bdecode_dict<'a>(buf: &mut Cursor<&'a [u8]>) -> BitterResult<BencodedDict
 
     while buf.stream_position().unwrap() < buf.get_ref().len() as u64 {
         if first_char_matches(buf, b'e') {
-            return Ok(BencodedDict(map));
+            return Ok(BencodedDict(map, buf_ptr));
         }
         let key = bdecode_str(buf)?;
         let value = bdecode_any(buf)?;
@@ -277,25 +282,34 @@ mod tests {
         let mut c = Cursor::new(d1);
         assert_eq!(
             bdecode_dict(&mut c).unwrap(),
-            BencodedDict(HashMap::from([
-                (b"cow" as &[u8], BVal::BencodedStr(b"moo")),
-                (b"spam", BVal::BencodedStr(b"eggs"))
-            ]))
+            BencodedDict(
+                HashMap::from([
+                    (b"cow" as &[u8], BVal::BencodedStr(b"moo")),
+                    (b"spam", BVal::BencodedStr(b"eggs"))
+                ]),
+                d1,
+            )
         );
         assert_finished(&c);
 
         c = Cursor::new(d2);
         assert_eq!(
             bdecode_dict(&mut c).unwrap(),
-            BencodedDict(HashMap::from([(
-                b"spam" as &[u8],
-                BVal::BencodedList(vec![BVal::BencodedStr(b"a"), BVal::BencodedStr(b"b")])
-            )]))
+            BencodedDict(
+                HashMap::from([(
+                    b"spam" as &[u8],
+                    BVal::BencodedList(vec![BVal::BencodedStr(b"a"), BVal::BencodedStr(b"b")])
+                )]),
+                d2,
+            )
         );
         assert_finished(&c);
 
         c = Cursor::new(b"de");
-        assert_eq!(bdecode_dict(&mut c).unwrap(), BencodedDict(HashMap::new()));
+        assert_eq!(
+            bdecode_dict(&mut c).unwrap(),
+            BencodedDict(HashMap::new(), c.get_ref())
+        );
         assert_finished(&c);
     }
 }
