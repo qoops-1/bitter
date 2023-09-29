@@ -3,6 +3,8 @@ use sha1::{Digest, Sha1};
 use crate::bencoding::*;
 use crate::utils::BitterResult;
 
+pub type Hash = [u8; 20];
+pub type PeerId = [u8; 20];
 #[derive(Debug)]
 pub struct Metainfo {
     pub announce: String,
@@ -23,12 +25,12 @@ impl BDecode for Metainfo {
 }
 
 #[derive(Debug)]
-struct MetainfoInfo {
+pub struct MetainfoInfo {
     pub name: String,
     pub piece_length: i64,
     pub pieces: Vec<u8>,
     pub files: Vec<MetainfoFile>,
-    pub hash: Vec<u8>,
+    pub hash: Hash,
 }
 
 impl BDecode for MetainfoInfo {
@@ -46,7 +48,7 @@ impl BDecode for MetainfoInfo {
                 length: l.to_owned(),
                 path: Vec::new(),
             });
-        let hash = Sha1::digest(buf_ptr).to_vec();
+        let hash: Hash = Sha1::digest(buf_ptr).into();
 
         let files = match single_file {
             Ok(single_file) => vec![single_file],
@@ -69,7 +71,7 @@ impl BDecode for MetainfoInfo {
 }
 
 #[derive(Debug)]
-struct MetainfoFile {
+pub struct MetainfoFile {
     pub length: i64,
     pub path: Vec<String>,
 }

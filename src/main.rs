@@ -1,15 +1,20 @@
+mod accounting;
 mod bencoding;
 mod download;
-mod utils;
 mod metainfo;
+mod protocol;
+mod utils;
 
-use std::{env, fs, process::exit, net::{IpAddr, Ipv4Addr}};
 use crate::metainfo::Metainfo;
 use bencoding::*;
 use download::download;
+use std::{
+    env, fs,
+    net::{IpAddr, Ipv4Addr},
+    process::exit,
+};
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let args: Vec<_> = env::args().collect();
     if args.len() != 2 {
         eprint!(
@@ -35,11 +40,11 @@ async fn main() {
         ip: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
     };
 
-    download(parsed_metainfo, settings).await.unwrap()
+    download(parsed_metainfo, settings).unwrap()
 }
 
+#[derive(Clone)]
 pub struct Settings {
     pub port: u16,
     pub ip: IpAddr,
 }
-

@@ -1,12 +1,16 @@
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
-use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
+use std::sync::Arc;
 use std::{fmt, io::Read, net::SocketAddr, str, time::Duration};
-use tokio;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::task::{AbortHandle, JoinHandle, JoinSet};
+use tokio::{select, try_join};
 use ureq;
 
+use crate::accounting::Accounting;
+use crate::metainfo::{Hash, PeerId};
+use crate::protocol::{Handshake, Packet, TcpConn};
 use crate::{
     bencoding::{bdecode, BDecode, BencodedValue},
     metainfo::Metainfo,
@@ -15,16 +19,22 @@ use crate::{
 };
 const MAX_MSG_SIZE: u64 = 1000 * 1000;
 
-pub async fn download(metainfo: Metainfo, settings: Settings) -> BitterResult<()> {
-    let sched = Downloader::new(settings);
+pub fn download(metainfo: Metainfo, settings: Settings) -> BitterResult<()> {
+    let mut sched = Downloader::new(settings);
 
-    sched.run(metainfo).await
+    sched.run(metainfo)
 }
 
 pub struct Downloader {
     peer_id: String,
     peers: Vec<Peer>,
     settings: Settings,
+}
+
+#[derive(Clone)]
+struct DownloadParams {
+    peer_id: PeerId,
+    info_hash: Hash,
 }
 
 impl Downloader {
@@ -41,14 +51,16 @@ impl Downloader {
             settings: settings,
         }
     }
-    async fn run(&self, metainfo: Metainfo) -> BitterResult<()> {
-        let server = tokio::spawn(run_server(self.settings));
 
-        let peers = announce(
+    #[tokio::main]
+    async fn run(&mut self, metainfo: Metainfo) -> BitterResult<()> {
+        let total_pieces = metainfo.info.pieces.len();
+        let acct = Arc::new(Accounting::new(total_pieces));
+        let announce_resp = announce(
             metainfo.announce,
             AnnounceRequest {
                 info_hash: metainfo.info.hash,
-                peer_id: self.peer_id,
+                peer_id: &self.peer_id,
                 port: self.settings.port,
                 uploaded: 0,
                 downloaded: 0,
@@ -56,13 +68,76 @@ impl Downloader {
                 event: AnnounceEvent::Started,
             },
         )?;
+        let params = DownloadParams {
+            peer_id: self
+                .peer_id
+                .as_bytes()
+                .try_into()
+                .expect("peer_id contains more bytes than expected"),
+            info_hash: metainfo.info.hash,
+        };
 
-        unimplemented!()
+        self.peers.extend(announce_resp.peers);
+
+        let mut jset = JoinSet::new();
+
+        for p in self.peers.iter() {
+            jset.spawn(run_new_peer_conn(params.clone(), p.clone(), acct.clone()));
+        }
+
+        let server = TcpListener::bind((self.settings.ip, self.settings.port))
+            .await
+            .map_err(BitterMistake::new_err)?;
+
+        loop {
+            select! {
+                _ = jset.join_next() => {unimplemented!()}
+                res = server.accept() => {
+                    // TODO: handle result properly, it can return WOULDBLOCK and etc
+                    let (stream, addr) = res.unwrap();
+                    let peer = Peer { addr, peer_id: None};
+
+                    jset.spawn(run_peer_handler(params.clone(), peer, acct.clone(), stream));
+                }
+            }
+        }
     }
 }
 
-async fn run_server(settings: Settings) -> BitterResult<()> {
-    let listener = TcpListener::bind((settings.ip, settings.port)).await?;
+async fn run_new_peer_conn(
+    params: DownloadParams,
+    peer: Peer,
+    acct: Arc<Accounting>,
+) -> BitterResult<()> {
+    let stream = TcpStream::connect(peer.addr)
+        .await
+        .map_err(BitterMistake::new_err)?;
+
+    run_peer_handler(params, peer, acct, stream).await
+}
+
+async fn run_peer_handler(
+    params: DownloadParams,
+    peer: Peer,
+    acct: Arc<Accounting>,
+    stream: TcpStream,
+) -> BitterResult<()> {
+    let conn = TcpConn::new(stream);
+
+    let write_fut = conn.write(Packet::Handshake(Handshake::Bittorrent(
+        params.info_hash,
+        params.peer_id,
+    )));
+    let read_fut = conn.read_handshake();
+    let (_, handshake) = try_join!(write_fut, read_fut)?;
+    match handshake {
+        Handshake::Other => return Err(BitterMistake::new("Handshake failed. Unknown protocol")),
+        Handshake::Bittorrent(peer_hash, _) => {
+            if peer_hash != params.info_hash {
+                return Err(BitterMistake::new("info_hash mismatch"));
+            }
+        }
+    }
 
     unimplemented!()
 }
@@ -85,9 +160,9 @@ impl fmt::Display for AnnounceEvent {
     }
 }
 
-struct AnnounceRequest {
-    info_hash: Vec<u8>,
-    peer_id: String,
+struct AnnounceRequest<'a> {
+    info_hash: Hash,
+    peer_id: &'a str,
     port: u16,
     uploaded: u64,
     downloaded: u64,
@@ -95,6 +170,7 @@ struct AnnounceRequest {
     event: AnnounceEvent,
 }
 
+#[derive(Clone)]
 struct Peer {
     addr: SocketAddr,
     peer_id: Option<Vec<u8>>,
