@@ -173,17 +173,17 @@ struct AnnounceRequest<'a> {
 #[derive(Clone)]
 struct Peer {
     addr: SocketAddr,
-    peer_id: Option<Vec<u8>>,
+    peer_id: Option<PeerId>,
 }
 
 impl BDecode for Peer {
     fn bdecode(benc: &BencodedValue) -> BitterResult<Self> {
         let hmap = benc.try_into_dict()?;
-        let peer_id = hmap
+        let peer_id: Option<PeerId> = hmap
             .get_val("peer id")
             .and_then(|v| v.try_into_bytestring())
-            .ok()
-            .map(Vec::from);
+            .and_then(|v| v.try_into().map_err(BitterMistake::new_err))
+            .ok();
         let port: u16 = *hmap.get_val("port")?.try_into_int()? as u16;
         let addr = hmap.get_val("ip")?.try_into_string()?;
 
@@ -191,7 +191,8 @@ impl BDecode for Peer {
             .to_socket_addrs()
             .map_err(BitterMistake::new_err)?;
 
-        // taking only the first resolution because peer has only one addr. TODO: improve this later, add multiple addresses to a peer
+        // taking only the first resolution because peer has only one addr.
+        // TODO: improve this later, add multiple addresses to a peer
         sockaddrs
             .next()
             .ok_or(BitterMistake::new_owned(format!(
