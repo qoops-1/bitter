@@ -1,5 +1,6 @@
 use crate::metainfo::{Hash, PeerId};
-use bytes::{Bytes, BytesMut};
+use bit_vec::BitVec;
+use bytes::BytesMut;
 use std::io;
 use std::io::ErrorKind::InvalidData;
 use std::mem::size_of;
@@ -16,14 +17,15 @@ pub enum Packet<'a> {
     Interested,
     NotInterested,
     Have(u32),
-    Bitfield,
-    Request,
-    Piece,
+    Bitfield(BitVec),
+    Request(u32, u32, u32),
+    Piece(u32, u32, &'a [u8]),
+    Cancel(u32, u32, u32),
     Handshake(Handshake<'a>),
 }
 
 impl<'a> Packet<'a> {
-    pub fn parse(buf: &[u8]) -> io::Result<Packet> {
+    pub fn parse(buf: &[u8]) -> io::Result<Self> {
         let msg_type = buf[0];
 
         match msg_type {
@@ -31,24 +33,13 @@ impl<'a> Packet<'a> {
             1 => Ok(Packet::Unchoke),
             2 => Ok(Packet::Interested),
             3 => Ok(Packet::NotInterested),
-            4 => Self::parse_have(buf),
+            4 => parse_have(buf),
+            5 => parse_bitfield(buf),
+            6 => parse_request(buf),
+            7 => parse_piece(buf),
+            8 => parse_cancel(buf),
             _ => Err(io::Error::new(InvalidData, "unknown packet type")),
         }
-    }
-
-    fn parse_have(buf: &[u8]) -> io::Result<Packet> {
-        if buf.len() != 4 {
-            return Err(io::Error::new(
-                InvalidData,
-                "\"Have\" packet has incorrect size",
-            ));
-        }
-        let pieceno = u32::from_be_bytes(buf.try_into().unwrap());
-        Ok(Packet::Have(pieceno))
-    }
-
-    fn parse_bitfield(buf: &[u8]) -> io::Result<Packet> {
-        todo!()
     }
 }
 
@@ -62,12 +53,17 @@ pub enum Handshake<'a> {
 const MAX_PACKET_LEN: usize = 1024 * 1024 * 8;
 const BUF_SIZE: usize = MAX_PACKET_LEN as usize;
 const MSG_LEN_LEN: usize = 4;
+const INCORRECT_LEN_ERROR: io::Error = io::Error::new(InvalidData, "Packet has incorrect size");
 // Handshake msg constants
 const BITTORRENT_PROTO: &[u8] = "BitTorrent protocol".as_bytes();
 const BITTORRENT_PROTO_LEN: usize = 19;
 const RESERVED_LEN: usize = 8;
 const BITTORRENT_HANDSHAKE_LEN: usize =
     1 + BITTORRENT_PROTO_LEN + RESERVED_LEN + size_of::<PeerId>() + size_of::<Hash>();
+// Request msg constants
+const REQUEST_MSG_LEN: usize = 12;
+// Piece msg constants
+const PIECE_MSG_MIN_LEN: usize = 8;
 
 pub struct TcpConn {
     stream: TcpStream,
@@ -146,4 +142,54 @@ impl TcpConn {
     pub async fn close(&mut self) {
         self.stream.shutdown().await;
     }
+}
+
+fn parse_have(buf: &[u8]) -> io::Result<Packet> {
+    if buf.len() != 4 {
+        return Err(INCORRECT_LEN_ERROR);
+    }
+    let pieceno = u32::from_be_bytes(buf.try_into().unwrap());
+    Ok(Packet::Have(pieceno))
+}
+
+fn parse_bitfield(buf: &[u8]) -> io::Result<Packet> {
+    Ok(Packet::Bitfield(BitVec::from_bytes(buf)))
+}
+
+fn parse_request(buf: &[u8]) -> io::Result<Packet> {
+    parse_request_internal(buf).map(|(i, b, p)| Packet::Request(i, b, p))
+}
+
+fn parse_piece(buf: &[u8]) -> io::Result<Packet> {
+    if buf.len() < PIECE_MSG_MIN_LEN {
+        return Err(INCORRECT_LEN_ERROR);
+    }
+    let (index_buf, buf) = buf.split_at(4);
+    let (begin_buf, buf) = buf.split_at(4);
+
+    let index = u32::from_be_bytes(index_buf.try_into().unwrap());
+    let begin = u32::from_be_bytes(begin_buf.try_into().unwrap());
+    let data = buf;
+
+    Ok(Packet::Piece(index, begin, data))
+}
+
+fn parse_cancel(buf: &[u8]) -> io::Result<Packet> {
+    parse_request_internal(buf).map(|(i, b, p)| Packet::Cancel(i, b, p))
+}
+
+fn parse_request_internal(buf: &[u8]) -> io::Result<(u32, u32, u32)> {
+    if buf.len() != REQUEST_MSG_LEN {
+        return Err(INCORRECT_LEN_ERROR);
+    }
+
+    let (index_buf, buf) = buf.split_at(4);
+    let (begin_buf, buf) = buf.split_at(4);
+    let (piece_buf, buf) = buf.split_at(4);
+
+    let index = u32::from_be_bytes(index_buf.try_into().unwrap());
+    let begin = u32::from_be_bytes(begin_buf.try_into().unwrap());
+    let piece = u32::from_be_bytes(piece_buf.try_into().unwrap());
+
+    Ok((index, begin, piece))
 }
