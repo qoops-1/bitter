@@ -33,9 +33,23 @@ impl<'a> BencodedValue<'a> {
         }
     }
 
-    pub fn try_into_int(&self) -> BitterResult<&i64> {
+    pub fn try_into_int(&self) -> BitterResult<i64> {
         match self {
-            BencodedValue::BencodedInt(i) => Ok(i),
+            BencodedValue::BencodedInt(i) => Ok(*i),
+            _ => Err(BitterMistake::new("not an int")),
+        }
+    }
+
+    pub fn try_into_u32(&self) -> BitterResult<u32> {
+        match self {
+            BencodedValue::BencodedInt(i) => u32::try_from(*i).map_err(BitterMistake::new_err),
+            _ => Err(BitterMistake::new("not an int")),
+        }
+    }
+
+    pub fn try_into_u16(&self) -> BitterResult<u16> {
+        match self {
+            BencodedValue::BencodedInt(i) => u16::try_from(*i).map_err(BitterMistake::new_err),
             _ => Err(BitterMistake::new("not an int")),
         }
     }

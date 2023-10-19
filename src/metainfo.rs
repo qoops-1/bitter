@@ -1,7 +1,9 @@
+use std::mem::size_of;
+
 use sha1::{Digest, Sha1};
 
 use crate::bencoding::*;
-use crate::utils::BitterResult;
+use crate::utils::{BitterMistake, BitterResult};
 
 pub type Hash = [u8; 20];
 pub type PeerId = [u8; 20];
@@ -27,8 +29,8 @@ impl BDecode for Metainfo {
 #[derive(Debug)]
 pub struct MetainfoInfo {
     pub name: String,
-    pub piece_length: i64,
-    pub pieces: Vec<u8>,
+    pub piece_length: u32,
+    pub pieces: Vec<Hash>,
     pub files: Vec<MetainfoFile>,
     pub hash: Hash,
 }
@@ -39,8 +41,20 @@ impl BDecode for MetainfoInfo {
 
         let buf_ptr = dict.get_start_ptr();
         let name = dict.get_val("name")?.try_into_string()?.to_owned();
-        let piece_length = dict.get_val("piece length")?.try_into_int()?.to_owned();
-        let pieces: Vec<u8> = dict.get_val("pieces")?.try_into_bytestring()?.to_owned();
+        let piece_length = dict.get_val("piece length")?.try_into_u32()?.to_owned();
+        let pieces_all: Vec<u8> = dict.get_val("pieces")?.try_into_bytestring()?.to_owned();
+
+        if pieces_all.len() % size_of::<Hash>() != 0 {
+            return Err(BitterMistake::new_owned(format!(
+                "Incorrect size of \"pieces\" hash: {}",
+                pieces_all.len()
+            )));
+        }
+        let pieces: Vec<Hash> = pieces_all
+            .chunks_exact(size_of::<Hash>())
+            .map(|slc| slc.try_into().expect("hash size mismatch"))
+            .collect();
+
         let single_file = dict
             .get_val("length")
             .and_then(|v| v.try_into_int())

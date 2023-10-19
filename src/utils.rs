@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt, error::Error, str};
+use std::{borrow::Cow, error::Error, fmt, str};
 
 // Kindly stolen from `urlencoding` crate
 pub fn urlencode(mut data: &[u8]) -> String {
@@ -32,6 +32,10 @@ pub fn urlencode(mut data: &[u8]) -> String {
     result
 }
 
+#[inline]
+pub fn roundup_div(a: u32, b: u32) -> u32 {
+    (a + b - 1) / b
+}
 
 #[derive(Debug)]
 pub struct BitterMistake(Cow<'static, str>);

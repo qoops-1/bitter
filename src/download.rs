@@ -4,13 +4,14 @@ use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::sync::Arc;
 use std::{fmt, io::Read, net::SocketAddr, str, time::Duration};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::task::{AbortHandle, JoinHandle, JoinSet};
-use tokio::{select, try_join};
+use tokio::select;
+use tokio::task::JoinSet;
 use ureq;
 
 use crate::accounting::Accounting;
 use crate::metainfo::{Hash, PeerId};
-use crate::protocol::{Handshake, Packet, TcpConn};
+use crate::peer::{DownloadParams, PeerHandler};
+use crate::protocol::TcpConn;
 use crate::{
     bencoding::{bdecode, BDecode, BencodedValue},
     metainfo::Metainfo,
@@ -31,12 +32,6 @@ pub struct Downloader {
     settings: Settings,
 }
 
-#[derive(Clone)]
-struct DownloadParams {
-    peer_id: PeerId,
-    info_hash: Hash,
-}
-
 impl Downloader {
     fn new(settings: Settings) -> Downloader {
         let id: String = thread_rng()
@@ -48,14 +43,14 @@ impl Downloader {
         Downloader {
             peer_id: id,
             peers: Vec::new(),
-            settings: settings,
+            settings,
         }
     }
 
     #[tokio::main]
     async fn run(&mut self, metainfo: Metainfo) -> BitterResult<()> {
         let total_pieces = metainfo.info.pieces.len();
-        let acct = Arc::new(Accounting::new(total_pieces));
+        let acct = Accounting::new(total_pieces);
         let announce_resp = announce(
             metainfo.announce,
             AnnounceRequest {
@@ -75,6 +70,7 @@ impl Downloader {
                 .try_into()
                 .expect("peer_id contains more bytes than expected"),
             info_hash: metainfo.info.hash,
+            metainfo: Arc::new(metainfo.info),
         };
 
         self.peers.extend(announce_resp.peers);
@@ -97,7 +93,7 @@ impl Downloader {
                     let (stream, addr) = res.unwrap();
                     let peer = Peer { addr, peer_id: None};
 
-                    jset.spawn(run_peer_handler(params.clone(), peer, acct.clone(), stream));
+                    jset.spawn(run_peer_handler(params.clone(), acct.clone(), stream));
                 }
             }
         }
@@ -107,38 +103,21 @@ impl Downloader {
 async fn run_new_peer_conn(
     params: DownloadParams,
     peer: Peer,
-    acct: Arc<Accounting>,
+    acct: Accounting,
 ) -> BitterResult<()> {
     let stream = TcpStream::connect(peer.addr)
         .await
         .map_err(BitterMistake::new_err)?;
 
-    run_peer_handler(params, peer, acct, stream).await
+    run_peer_handler(params, acct, stream).await
 }
 
 async fn run_peer_handler(
     params: DownloadParams,
-    peer: Peer,
-    acct: Arc<Accounting>,
+    acct: Accounting,
     stream: TcpStream,
 ) -> BitterResult<()> {
-    let conn = TcpConn::new(stream);
-
-    let write_fut = conn.write(Packet::Handshake(Handshake::Bittorrent(
-        params.info_hash,
-        params.peer_id,
-    )));
-    let read_fut = conn.read_handshake();
-    let (_, handshake) = try_join!(write_fut, read_fut)?;
-    match handshake {
-        Handshake::Other => return Err(BitterMistake::new("Handshake failed. Unknown protocol")),
-        Handshake::Bittorrent(peer_hash, _) => {
-            if peer_hash != params.info_hash {
-                return Err(BitterMistake::new("info_hash mismatch"));
-            }
-        }
-    }
-
+    let handler = PeerHandler::init(params, acct, stream);
     unimplemented!()
 }
 
@@ -184,7 +163,7 @@ impl BDecode for Peer {
             .and_then(|v| v.try_into_bytestring())
             .and_then(|v| v.try_into().map_err(BitterMistake::new_err))
             .ok();
-        let port: u16 = *hmap.get_val("port")?.try_into_int()? as u16;
+        let port: u16 = hmap.get_val("port")?.try_into_u16()? as u16;
         let addr = hmap.get_val("ip")?.try_into_string()?;
 
         let mut sockaddrs = (addr, port)
