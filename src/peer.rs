@@ -21,10 +21,9 @@ pub struct DownloadParams {
     pub metainfo: Arc<MetainfoInfo>,
 }
 
-pub struct PeerHandler {
-    conn: TcpConn,
+pub struct PeerHandler<'a> {
     acct: Accounting,
-    params: DownloadParams,
+    params: &'a DownloadParams,
     in_progress: Vec<PieceInProgress>,
 }
 struct PieceInProgress {
@@ -32,52 +31,24 @@ struct PieceInProgress {
     chunks: Vec<Option<Vec<u8>>>,
 }
 
-impl PeerHandler {
-    pub async fn init(
-        params: DownloadParams,
-        acct: Accounting,
-        stream: TcpStream,
-    ) -> BitterResult<PeerHandler> {
-        let mut conn = TcpConn::new(stream);
-
-        conn.write(&Packet::Handshake(Handshake::Bittorrent(
-            &params.info_hash,
-            &params.peer_id,
-        )))
-        .await?;
-
-        let handshake = conn.read_handshake().await?;
-        match handshake {
-            Handshake::Other => {
-                return Err(BitterMistake::new("Handshake failed. Unknown protocol"))
-            }
-            Handshake::Bittorrent(peer_hash, peer_id) => {
-                if *peer_hash != params.info_hash {
-                    return Err(BitterMistake::new("info_hash mismatch"));
-                }
-                // TODO: ("check peer id")
-            }
-        }
-
+impl<'a> PeerHandler<'a> {
+    pub fn new(params: &'a DownloadParams, acct: Accounting) -> PeerHandler {
         let in_progress = Vec::new();
-        Ok(PeerHandler {
-            conn,
+        PeerHandler {
             acct,
             params,
             in_progress,
-        })
+        }
     }
 
-    pub async fn run(&mut self) -> BitterResult<()> {
+    pub async fn run(&mut self, conn: &mut TcpConn) -> BitterResult<()> {
         loop {
-            let packet = self.conn.read().await?;
+            let packet = conn.read().await?;
 
             match packet {
-                Packet::Piece {
-                    index: i,
-                    begin,
-                    data,
-                } => unimplemented!(),
+                Packet::Piece { index, begin, data } => {
+                    self.handle_piece(index, begin, data).await?
+                }
                 Packet::Bitfield(bitmap) => self.handle_bitfield(bitmap),
                 _ => unimplemented!(),
             }
@@ -88,11 +59,11 @@ impl PeerHandler {
         self.acct.init_available(bv);
     }
 
-    async fn handle_piece<'a>(
+    async fn handle_piece<'b>(
         &mut self,
         index: u32,
         begin: u32,
-        data: &'a [u8],
+        data: &'b [u8],
     ) -> BitterResult<()> {
         self.verify_piece(index, begin, data)?;
 
@@ -144,7 +115,7 @@ impl PeerHandler {
         self.save_piece(index, &done_chunks).await
     }
 
-    async fn save_piece<'a>(&self, index: u32, chunks: &Vec<&Vec<u8>>) -> BitterResult<()> {
+    async fn save_piece<'b>(&self, index: u32, chunks: &Vec<&Vec<u8>>) -> BitterResult<()> {
         Ok(())
     }
 
@@ -160,7 +131,7 @@ impl PeerHandler {
         Ok(())
     }
 
-    fn verify_piece<'a>(&self, index: u32, begin: u32, data: &'a [u8]) -> BitterResult<()> {
+    fn verify_piece<'b>(&self, index: u32, begin: u32, data: &'b [u8]) -> BitterResult<()> {
         if index >= self.params.metainfo.pieces.len() as u32 {
             return Err(BitterMistake::new("Piece index out of bounds"));
         }

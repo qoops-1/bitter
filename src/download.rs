@@ -11,7 +11,7 @@ use ureq;
 use crate::accounting::Accounting;
 use crate::metainfo::{Hash, PeerId};
 use crate::peer::{DownloadParams, PeerHandler};
-use crate::protocol::TcpConn;
+use crate::protocol::{Handshake, Packet, TcpConn};
 use crate::{
     bencoding::{bdecode, BDecode, BencodedValue},
     metainfo::Metainfo,
@@ -117,7 +117,26 @@ async fn run_peer_handler(
     acct: Accounting,
     stream: TcpStream,
 ) -> BitterResult<()> {
-    let handler = PeerHandler::init(params, acct, stream);
+    let mut conn = TcpConn::new(stream);
+    let mut handler = PeerHandler::new(&params, acct);
+
+    conn.write(&Packet::Handshake(Handshake::Bittorrent(
+        &params.info_hash,
+        &params.peer_id,
+    )))
+    .await?;
+
+    let handshake = conn.read_handshake().await?;
+    match handshake {
+        Handshake::Other => return Err(BitterMistake::new("Handshake failed. Unknown protocol")),
+        Handshake::Bittorrent(peer_hash, peer_id) => {
+            if *peer_hash != params.info_hash {
+                return Err(BitterMistake::new("info_hash mismatch"));
+            }
+            // TODO: ("check peer id")
+        }
+    }
+    handler.run(&mut conn).await?;
     unimplemented!()
 }
 
