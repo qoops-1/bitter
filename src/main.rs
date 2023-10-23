@@ -63,8 +63,11 @@ fn main() {
 fn setup_dirs(files: &Vec<MetainfoFile>) -> BitterResult<()> {
     let mut dir_builder = DirBuilder::new();
     dir_builder.recursive(true).mode(0o755);
-    for MetainfoFile { length, path } in files {
-        let file = PathBuf::from_iter(path);
+    for MetainfoFile {
+        length: _,
+        path: file,
+    } in files
+    {
         if let Some(dir) = file.parent() {
             dir_builder.create(dir).map_err(BitterMistake::new_err)?;
         }

@@ -1,4 +1,5 @@
 use std::mem::size_of;
+use std::path::PathBuf;
 
 use sha1::{Digest, Sha1};
 
@@ -57,10 +58,10 @@ impl BDecode for MetainfoInfo {
 
         let single_file = dict
             .get_val("length")
-            .and_then(|v| v.try_into_int())
+            .and_then(|v| v.try_into_u32())
             .map(|l| MetainfoFile {
-                length: l.to_owned(),
-                path: Vec::new(),
+                length: l,
+                path: PathBuf::new(),
             });
         let hash: Hash = Sha1::digest(buf_ptr).into();
 
@@ -86,20 +87,21 @@ impl BDecode for MetainfoInfo {
 
 #[derive(Debug)]
 pub struct MetainfoFile {
-    pub length: i64,
-    pub path: Vec<String>,
+    pub length: u32,
+    pub path: PathBuf,
 }
 
 impl BDecode for MetainfoFile {
     fn bdecode(benc: &BencodedValue) -> BitterResult<Self> {
         let dict = benc.try_into_dict()?;
-        let length = dict.get_val("length")?.try_into_int()?.to_owned();
-        let path: Vec<String> = dict
-            .get_val("path")?
-            .try_into_list()?
-            .into_iter()
-            .map(|v| v.try_into_string().map(str::to_owned))
-            .collect::<BitterResult<Vec<_>>>()?;
+        let length = dict.get_val("length")?.try_into_u32()?.to_owned();
+        let path = PathBuf::from_iter(
+            dict.get_val("path")?
+                .try_into_list()?
+                .into_iter()
+                .map(|v| v.try_into_string())
+                .collect::<BitterResult<Vec<_>>>()?,
+        );
 
         Ok(MetainfoFile { length, path })
     }

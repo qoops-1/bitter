@@ -1,12 +1,21 @@
-use std::{convert::identity, sync::Arc};
+use std::{
+    convert::identity,
+    io::SeekFrom,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use bit_vec::BitVec;
 use sha1::{Digest, Sha1};
-use tokio::net::TcpStream;
+use tokio::{
+    fs::{File, OpenOptions},
+    io::{AsyncSeekExt, AsyncWriteExt},
+    net::TcpStream,
+};
 
 use crate::{
     accounting::Accounting,
-    metainfo::{Hash, MetainfoInfo, PeerId},
+    metainfo::{Hash, MetainfoFile, MetainfoInfo, PeerId},
     protocol::{Handshake, Packet, TcpConn},
     utils::{roundup_div, BitterMistake, BitterResult},
 };
@@ -115,7 +124,45 @@ impl<'a> PeerHandler<'a> {
         self.save_piece(index, &done_chunks).await
     }
 
-    async fn save_piece<'b>(&self, index: u32, chunks: &Vec<&Vec<u8>>) -> BitterResult<()> {
+    async fn save_piece(&self, index: u32, chunks: &Vec<&Vec<u8>>) -> BitterResult<()> {
+        let mut ftow = identify_files_to_write(
+            index,
+            self.params.metainfo.piece_length,
+            &self.params.metainfo,
+        );
+        let mut c_no: usize = 0;
+        let mut c_offset: usize = 0;
+        for (path, mut len) in ftow.files {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .mode(0o755)
+                .open(path)
+                .await
+                .map_err(BitterMistake::new_err)?;
+
+            if ftow.offset != 0 {
+                file.seek(SeekFrom::Start(ftow.offset.into()))
+                    .await
+                    .map_err(BitterMistake::new_err)?;
+                ftow.offset = 0;
+            }
+
+            while len > 0 {
+                let c_write;
+                if chunks[c_no].len() > c_offset + len as usize {
+                    c_write = &chunks[c_no][c_offset..c_offset + len as usize];
+                    c_offset += len;
+                } else {
+                    c_write = &chunks[c_no][c_offset..];
+                    c_no += 1;
+                }
+                file.write_all(c_write)
+                    .await
+                    .map_err(BitterMistake::new_err)?;
+                len -= c_write.len();
+            }
+        }
         Ok(())
     }
 
@@ -148,4 +195,42 @@ impl<'a> PeerHandler<'a> {
 
         Ok(())
     }
+}
+
+fn identify_files_to_write(index: u32, len: u32, meta: &MetainfoInfo) -> FilesToWrite {
+    let mut start_found = false;
+    let mut bytes_seen = 0;
+    let mut bytes_to_write = len;
+    let chunk_start = index * len;
+    let mut res = FilesToWrite::default();
+    for f in &meta.files {
+        let mut write_len = f.length;
+        bytes_seen += f.length;
+
+        if !start_found && bytes_seen > chunk_start {
+            start_found = true;
+            res.offset = chunk_start - (bytes_seen - f.length);
+            write_len = bytes_seen - chunk_start;
+        }
+
+        if !start_found {
+            continue;
+        }
+
+        if bytes_to_write <= write_len {
+            res.files.push((f.path.as_path(), bytes_to_write as usize));
+            break;
+        }
+
+        res.files.push((f.path.as_path(), write_len as usize));
+        bytes_to_write -= write_len;
+    }
+
+    res
+}
+
+#[derive(Default)]
+struct FilesToWrite<'a> {
+    offset: u32,
+    files: Vec<(&'a Path, usize)>,
 }
