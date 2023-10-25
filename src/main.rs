@@ -15,7 +15,6 @@ use std::{
     fs::{self, DirBuilder, File},
     net::{IpAddr, Ipv4Addr},
     os::unix::fs::DirBuilderExt,
-    path::PathBuf,
     process::exit,
 };
 use utils::{BitterMistake, BitterResult};

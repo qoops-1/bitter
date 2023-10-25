@@ -5,10 +5,7 @@ use crate::{
 use bit_vec::BitVec;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::mem::size_of;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::utils::BitterResult;
 
@@ -120,13 +117,19 @@ pub enum Handshake<'a> {
     Other,
 }
 
-pub struct TcpConn {
-    stream: TcpStream,
+pub struct TcpConn<T>
+where
+    T: Sized + Unpin + AsyncRead + AsyncWrite,
+{
+    stream: T,
     buf: BytesMut,
 }
 
-impl TcpConn {
-    pub fn new(stream: TcpStream) -> TcpConn {
+impl<T> TcpConn<T>
+where
+    T: Sized + Unpin + AsyncRead + AsyncWrite,
+{
+    pub fn new(stream: T) -> TcpConn<T> {
         let buf = BytesMut::with_capacity(BUF_SIZE);
         return TcpConn { buf, stream };
     }

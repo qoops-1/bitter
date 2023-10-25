@@ -9,7 +9,7 @@ use bit_vec::BitVec;
 use sha1::{Digest, Sha1};
 use tokio::{
     fs::{File, OpenOptions},
-    io::{AsyncSeekExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncSeekExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
 };
 
@@ -50,7 +50,10 @@ impl<'a> PeerHandler<'a> {
         }
     }
 
-    pub async fn run(&mut self, conn: &mut TcpConn) -> BitterResult<()> {
+    pub async fn run<T: Unpin + AsyncRead + AsyncWrite>(
+        &mut self,
+        conn: &mut TcpConn<T>,
+    ) -> BitterResult<()> {
         loop {
             let packet = conn.read().await?;
 
@@ -121,49 +124,7 @@ impl<'a> PeerHandler<'a> {
             .collect::<Vec<_>>();
 
         self.verify_hash(index, &done_chunks)?;
-        self.save_piece(index, &done_chunks).await
-    }
-
-    async fn save_piece(&self, index: u32, chunks: &Vec<&Vec<u8>>) -> BitterResult<()> {
-        let mut ftow = identify_files_to_write(
-            index,
-            self.params.metainfo.piece_length,
-            &self.params.metainfo,
-        );
-        let mut c_no: usize = 0;
-        let mut c_offset: usize = 0;
-        for (path, mut len) in ftow.files {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .mode(0o755)
-                .open(path)
-                .await
-                .map_err(BitterMistake::new_err)?;
-
-            if ftow.offset != 0 {
-                file.seek(SeekFrom::Start(ftow.offset.into()))
-                    .await
-                    .map_err(BitterMistake::new_err)?;
-                ftow.offset = 0;
-            }
-
-            while len > 0 {
-                let c_write;
-                if chunks[c_no].len() > c_offset + len as usize {
-                    c_write = &chunks[c_no][c_offset..c_offset + len as usize];
-                    c_offset += len;
-                } else {
-                    c_write = &chunks[c_no][c_offset..];
-                    c_no += 1;
-                }
-                file.write_all(c_write)
-                    .await
-                    .map_err(BitterMistake::new_err)?;
-                len -= c_write.len();
-            }
-        }
-        Ok(())
+        save_piece(&self.params.metainfo, index, &done_chunks).await
     }
 
     fn verify_hash(&self, index: u32, chunks: &Vec<&Vec<u8>>) -> BitterResult<()> {
@@ -197,9 +158,48 @@ impl<'a> PeerHandler<'a> {
     }
 }
 
-fn identify_files_to_write(index: u32, len: u32, meta: &MetainfoInfo) -> FilesToWrite {
+async fn save_piece(meta: &MetainfoInfo, index: u32, chunks: &Vec<&Vec<u8>>) -> BitterResult<()> {
+    let mut ftow = identify_files_to_write(index, meta);
+    let mut c_no: usize = 0;
+    let mut c_offset: usize = 0;
+    for (path, mut len) in ftow.files {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .mode(0o755)
+            .open(path)
+            .await
+            .map_err(BitterMistake::new_err)?;
+
+        if ftow.offset != 0 {
+            file.seek(SeekFrom::Start(ftow.offset.into()))
+                .await
+                .map_err(BitterMistake::new_err)?;
+            ftow.offset = 0;
+        }
+
+        while len > 0 {
+            let c_write;
+            if chunks[c_no].len() > c_offset + len as usize {
+                c_write = &chunks[c_no][c_offset..c_offset + len as usize];
+                c_offset += len;
+            } else {
+                c_write = &chunks[c_no][c_offset..];
+                c_no += 1;
+            }
+            file.write_all(c_write)
+                .await
+                .map_err(BitterMistake::new_err)?;
+            len -= c_write.len();
+        }
+    }
+    Ok(())
+}
+
+fn identify_files_to_write(index: u32, meta: &MetainfoInfo) -> FilesToWrite {
     let mut start_found = false;
     let mut bytes_seen = 0;
+    let len = meta.piece_length;
     let mut bytes_to_write = len;
     let chunk_start = index * len;
     let mut res = FilesToWrite::default();
