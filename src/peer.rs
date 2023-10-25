@@ -229,8 +229,150 @@ fn identify_files_to_write(index: u32, meta: &MetainfoInfo) -> FilesToWrite {
     res
 }
 
-#[derive(Default)]
+#[derive(Default, PartialEq, Eq, Debug)]
 struct FilesToWrite<'a> {
     offset: u32,
     files: Vec<(&'a Path, usize)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use crate::metainfo::{Hash, MetainfoFile, MetainfoInfo};
+
+    use super::{identify_files_to_write, FilesToWrite};
+
+    #[test]
+    fn identify_ftw_whole_file_test() {
+        let f1 = PathBuf::from("f1");
+        let f2 = PathBuf::from("f2");
+
+        let meta = MetainfoInfo {
+            name: "".to_owned(),
+            piece_length: 4,
+            hash: Hash::default(),
+            pieces: Vec::new(),
+            files: vec![
+                MetainfoFile {
+                    length: 4,
+                    path: f1.clone(),
+                },
+                MetainfoFile {
+                    length: 5,
+                    path: f2.clone(),
+                },
+            ],
+        };
+
+        let ftw1 = FilesToWrite {
+            offset: 0,
+            files: vec![(&f1, 4)],
+        };
+        let ftw2 = FilesToWrite {
+            offset: 0,
+            files: vec![(&f2, 4)],
+        };
+
+        assert_eq!(identify_files_to_write(0, &meta), ftw1);
+        assert_eq!(identify_files_to_write(1, &meta), ftw2);
+    }
+
+    #[test]
+    fn identify_ftw_offset_test() {
+        let f1 = PathBuf::from("f1");
+
+        let meta = MetainfoInfo {
+            name: "".to_owned(),
+            piece_length: 4,
+            hash: Hash::default(),
+            pieces: Vec::new(),
+            files: vec![MetainfoFile {
+                length: 14,
+                path: f1.clone(),
+            }],
+        };
+
+        assert_eq!(
+            identify_files_to_write(1, &meta),
+            FilesToWrite {
+                offset: 4,
+                files: vec![(&f1, 4)],
+            }
+        );
+        assert_eq!(
+            identify_files_to_write(2, &meta),
+            FilesToWrite {
+                offset: 8,
+                files: vec![(&f1, 4)],
+            }
+        );
+    }
+
+    #[test]
+    fn identify_ftw_multifile_test() {
+        let f1 = PathBuf::from("f1");
+        let f2 = PathBuf::from("f2");
+
+        let meta = MetainfoInfo {
+            name: "".to_owned(),
+            piece_length: 4,
+            hash: Hash::default(),
+            pieces: Vec::new(),
+            files: vec![
+                MetainfoFile {
+                    length: 6,
+                    path: f1.clone(),
+                },
+                MetainfoFile {
+                    length: 4,
+                    path: f2.clone(),
+                },
+            ],
+        };
+
+        assert_eq!(
+            identify_files_to_write(1, &meta),
+            FilesToWrite {
+                offset: 4,
+                files: vec![(&f1, 2), (&f2, 2)],
+            }
+        );
+    }
+
+    #[test]
+    fn identify_ftw_all_files_test() {
+        let f1 = PathBuf::from("f1");
+        let f2 = PathBuf::from("f2");
+        let f3 = PathBuf::from("f3");
+
+        let meta = MetainfoInfo {
+            name: "".to_owned(),
+            piece_length: 7,
+            hash: Hash::default(),
+            pieces: Vec::new(),
+            files: vec![
+                MetainfoFile {
+                    length: 2,
+                    path: f1.clone(),
+                },
+                MetainfoFile {
+                    length: 2,
+                    path: f2.clone(),
+                },
+                MetainfoFile {
+                    length: 4,
+                    path: f3.clone(),
+                },
+            ],
+        };
+
+        assert_eq!(
+            identify_files_to_write(0, &meta),
+            FilesToWrite {
+                offset: 0,
+                files: vec![(&f1, 2), (&f2, 2), (&f3, 3)],
+            }
+        );
+    }
 }
