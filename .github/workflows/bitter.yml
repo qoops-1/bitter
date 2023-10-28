@@ -1,10 +1,12 @@
-name: Bitter CI
+name: CI
 
 on:
   push:
-    branches: [ $default-branch ]
+    branches:
+      - master
   pull_request:
-    branches: [ $default-branch ]
+    branches:
+      - master
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,10 +15,32 @@ jobs:
   build:
 
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-C instrument-coverage"
+      LLVM_PROFILE_FILE: "bitter-%m-%p.profraw"
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
+    - name: Install llvm-tools, used to generate coverage
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: nightly
+        profile: minimal
+        override: true
+        components: llvm-tools-preview
     - name: Build
-      run: cargo build --verbose
+      run: cargo build
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test
+    - name: Setup grcov tool
+      run: |
+        release_url="$(curl \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/mozilla/grcov/releases | \
+          jq -r '.[0].assets | map(select(.browser_download_url | test(".*x86_64-unknown-linux-musl.tar.bz2$"))) | .[0].browser_download_url')"
+
+        curl -sL "$release_url" | sudo tar xvj -C /usr/local/bin/
+    - name: Generate and upload coverage report
+      run: |
+        grcov . -s . --keep-only src/**/*.rs --binary-path ./target/debug/ -t coveralls+ --commit-sha $GITHUB_SHA --vcs-branch $GITHUB_REF_NAME --token ${{ secrets.COVERALLS_TOKEN }} --branch -o coverage.json
+        curl -X POST https://coveralls.io/api/v1/jobs -F 'json_file=@coverage.json'
