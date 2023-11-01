@@ -16,14 +16,15 @@ const MSG_LEN_LEN: usize = 4;
 const INCORRECT_LEN_ERROR: &str = "Packet has incorrect size";
 // Handshake msg constants
 const BITTORRENT_PROTO: &[u8] = "BitTorrent protocol".as_bytes();
+
+// Message lengths
 const BITTORRENT_PROTO_LEN: usize = 19;
 const RESERVED_LEN: usize = 8;
+const MSG_TYPE_LEN: usize = 1;
 const BITTORRENT_HANDSHAKE_LEN: usize =
-    1 + BITTORRENT_PROTO_LEN + RESERVED_LEN + size_of::<PeerId>() + size_of::<Hash>();
-// Request msg constants
-const REQUEST_MSG_LEN: usize = 12;
-// Piece msg constants
-const PIECE_MSG_MIN_LEN: usize = 8;
+    MSG_TYPE_LEN + BITTORRENT_PROTO_LEN + RESERVED_LEN + size_of::<PeerId>() + size_of::<Hash>();
+const REQUEST_MSG_LEN: usize = 12 + MSG_TYPE_LEN;
+const PIECE_MSG_MIN_LEN: usize = 8 + MSG_TYPE_LEN;
 // Message codes
 const MSG_CODE_CHOKE: u8 = 0;
 const MSG_CODE_UNCHOKE: u8 = 1;
@@ -84,13 +85,17 @@ impl<'a> Packet<'a> {
             Packet::Handshake(h) => serialize_handshake(h),
             Packet::Choke => serialize_code_only(MSG_CODE_CHOKE),
             Packet::Unchoke => serialize_code_only(MSG_CODE_UNCHOKE),
+            Packet::Request { index, begin, piece } => serialize_request(*index, *begin, *piece),
+            Packet::Piece { index, begin, data } => serialize_piece(*index, *begin, data),
+            Packet::Bitfield(bitvec) => serialize_bitfield(bitvec),
             _ => unimplemented!(),
         }
     }
 }
 
 fn serialize_code_only(msg_code: u8) -> Bytes {
-    let pieces = &[&u32::to_be_bytes(1)[..], &[msg_code]];
+    let len = 1;
+    let pieces = &[&u32::to_be_bytes(len)[..], &[msg_code]];
 
     Bytes::from(pieces.concat())
 }
@@ -111,6 +116,39 @@ fn serialize_handshake(handshake: &Handshake) -> Bytes {
     buf.freeze()
 }
 
+fn serialize_request(index: u32, begin: u32, piece: u32) -> Bytes {
+    let mut buf = BytesMut::with_capacity(MSG_LEN_LEN + REQUEST_MSG_LEN);
+
+    buf.put_u32(REQUEST_MSG_LEN as u32);
+    buf.put_u8(MSG_CODE_REQUEST);
+    buf.put_u32(index);
+    buf.put_u32(begin);
+    buf.put_u32(piece);
+
+    buf.freeze()
+}
+
+fn serialize_piece(index: u32, begin: u32, data: &[u8]) -> Bytes {
+    let msg_len = PIECE_MSG_MIN_LEN + data.len();
+    let mut buf = BytesMut::with_capacity(MSG_LEN_LEN + msg_len);
+
+    buf.put_u32(msg_len as u32);
+    buf.put_u8(MSG_CODE_PIECE);
+    buf.put_u32(index);
+    buf.put_u32(begin);
+    buf.put_slice(data);
+
+    buf.freeze()
+}
+
+fn serialize_bitfield(bits: &BitVec) -> Bytes {
+    let mut buf = BytesMut::with_capacity(MSG_LEN_LEN + MSG_TYPE_LEN + bits.len());
+
+    buf.put_u32(bits.len() as u32);
+    unimplemented!()
+
+}
+ 
 #[derive(PartialEq)]
 pub enum Handshake<'a> {
     Bittorrent(&'a Hash, &'a PeerId),
@@ -242,7 +280,7 @@ fn parse_request(buf: &[u8]) -> BitterResult<Packet> {
 }
 
 fn parse_piece(buf: &[u8]) -> BitterResult<Packet> {
-    if buf.len() < PIECE_MSG_MIN_LEN {
+    if buf.len() < PIECE_MSG_MIN_LEN - MSG_TYPE_LEN {
         return Err(BitterMistake::new(INCORRECT_LEN_ERROR));
     }
     let (index_buf, buf) = buf.split_at(4);
@@ -264,7 +302,7 @@ fn parse_cancel(buf: &[u8]) -> BitterResult<Packet> {
 }
 
 fn parse_request_internal(buf: &[u8]) -> BitterResult<(u32, u32, u32)> {
-    if buf.len() != REQUEST_MSG_LEN {
+    if buf.len() != REQUEST_MSG_LEN - MSG_TYPE_LEN {
         return Err(BitterMistake::new(INCORRECT_LEN_ERROR));
     }
 

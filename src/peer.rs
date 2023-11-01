@@ -125,6 +125,7 @@ impl<'a> PeerHandler<'a> {
 
         self.verify_hash(index, &done_chunks)?;
         save_piece(&self.params.metainfo, index, &done_chunks).await
+        // self.request_new_piece().await
     }
 
     fn verify_hash(&self, index: u32, chunks: &Vec<&Vec<u8>>) -> BitterResult<()> {
