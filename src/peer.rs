@@ -266,17 +266,20 @@ mod tests {
             ],
         };
 
-        let ftw1 = FilesToWrite {
-            offset: 0,
-            files: vec![(&f1, 4)],
-        };
-        let ftw2 = FilesToWrite {
-            offset: 0,
-            files: vec![(&f2, 4)],
-        };
-
-        assert_eq!(identify_files_to_write(0, &meta), ftw1);
-        assert_eq!(identify_files_to_write(1, &meta), ftw2);
+        assert_eq!(
+            identify_files_to_write(0, &meta),
+            FilesToWrite {
+                offset: 0,
+                files: vec![(&f1, 4)],
+            }
+        );
+        assert_eq!(
+            identify_files_to_write(1, &meta),
+            FilesToWrite {
+                offset: 0,
+                files: vec![(&f2, 4)],
+            }
+        );
     }
 
     #[test]

@@ -21,10 +21,13 @@ const BITTORRENT_PROTO: &[u8] = "BitTorrent protocol".as_bytes();
 const BITTORRENT_PROTO_LEN: usize = 19;
 const RESERVED_LEN: usize = 8;
 const MSG_TYPE_LEN: usize = 1;
-const BITTORRENT_HANDSHAKE_LEN: usize =
-    MSG_TYPE_LEN + BITTORRENT_PROTO_LEN + RESERVED_LEN + size_of::<PeerId>() + size_of::<Hash>();
-const REQUEST_MSG_LEN: usize = 12 + MSG_TYPE_LEN;
-const PIECE_MSG_MIN_LEN: usize = 8 + MSG_TYPE_LEN;
+const MSG_LEN_BITTORRENT_HANDSHAKE: usize =
+    1 + BITTORRENT_PROTO_LEN + RESERVED_LEN + size_of::<PeerId>() + size_of::<Hash>();
+const MSG_LEN_HAVE: usize = MSG_TYPE_LEN + 4;
+const MSG_LEN_REQUEST: usize = 12 + MSG_TYPE_LEN;
+const MSG_MIN_LEN_PIECE: usize = 8 + MSG_TYPE_LEN;
+// len of cancel msg should be the same as request and there are some assumptions about this in the code anyway, so I'll do this
+const MSG_LEN_CANCEL: usize = MSG_LEN_REQUEST;
 // Message codes
 const MSG_CODE_CHOKE: u8 = 0;
 const MSG_CODE_UNCHOKE: u8 = 1;
@@ -85,12 +88,33 @@ impl<'a> Packet<'a> {
             Packet::Handshake(h) => serialize_handshake(h),
             Packet::Choke => serialize_code_only(MSG_CODE_CHOKE),
             Packet::Unchoke => serialize_code_only(MSG_CODE_UNCHOKE),
-            Packet::Request { index, begin, piece } => serialize_request(*index, *begin, *piece),
-            Packet::Piece { index, begin, data } => serialize_piece(*index, *begin, data),
+            Packet::Interested => serialize_code_only(MSG_CODE_INTERESTED),
+            Packet::NotInterested => serialize_code_only(MSG_CODE_NOT_INTERESTED),
+            Packet::Have(i) => serialize_have(*i),
             Packet::Bitfield(bitvec) => serialize_bitfield(bitvec),
+            Packet::Request {
+                index,
+                begin,
+                piece,
+            } => serialize_request(*index, *begin, *piece),
+            Packet::Piece { index, begin, data } => serialize_piece(*index, *begin, data),
+            Packet::Cancel {
+                index,
+                begin,
+                piece,
+            } => serialize_cancel(*index, *begin, *piece),
             _ => unimplemented!(),
         }
     }
+}
+
+#[inline]
+fn buf_with_len(len: usize) -> BytesMut {
+    let mut buf = BytesMut::with_capacity(len + MSG_LEN_LEN);
+
+    buf.put_u32(len as u32);
+
+    buf
 }
 
 fn serialize_code_only(msg_code: u8) -> Bytes {
@@ -105,7 +129,8 @@ fn serialize_handshake(handshake: &Handshake) -> Bytes {
         Handshake::Other => panic!("tried serializing unknown message"),
         Handshake::Bittorrent(h, pid) => (h, pid),
     };
-    let mut buf = BytesMut::with_capacity(BITTORRENT_HANDSHAKE_LEN);
+    // MSG_LEN_BITTORRENT_HANDSHAKE already includes len, so can't reuse buf_with_len as it adds MSG_LEN_LEN
+    let mut buf = BytesMut::with_capacity(MSG_LEN_BITTORRENT_HANDSHAKE);
 
     buf.put_u8(BITTORRENT_PROTO_LEN as u8);
     buf.put_slice(BITTORRENT_PROTO);
@@ -116,10 +141,26 @@ fn serialize_handshake(handshake: &Handshake) -> Bytes {
     buf.freeze()
 }
 
-fn serialize_request(index: u32, begin: u32, piece: u32) -> Bytes {
-    let mut buf = BytesMut::with_capacity(MSG_LEN_LEN + REQUEST_MSG_LEN);
+fn serialize_have(index: u32) -> Bytes {
+    let mut buf = buf_with_len(MSG_LEN_HAVE);
 
-    buf.put_u32(REQUEST_MSG_LEN as u32);
+    buf.put_u8(MSG_CODE_HAVE);
+    buf.put_u32(index);
+    buf.freeze()
+}
+
+fn serialize_bitfield(bits: &BitVec) -> Bytes {
+    let mut buf = buf_with_len(MSG_TYPE_LEN + bits.len());
+
+    buf.put_u8(MSG_CODE_BITFIELD);
+    buf.put_slice(&bits.to_bytes());
+
+    buf.freeze()
+}
+
+fn serialize_request(index: u32, begin: u32, piece: u32) -> Bytes {
+    let mut buf = buf_with_len(MSG_LEN_REQUEST);
+
     buf.put_u8(MSG_CODE_REQUEST);
     buf.put_u32(index);
     buf.put_u32(begin);
@@ -129,10 +170,9 @@ fn serialize_request(index: u32, begin: u32, piece: u32) -> Bytes {
 }
 
 fn serialize_piece(index: u32, begin: u32, data: &[u8]) -> Bytes {
-    let msg_len = PIECE_MSG_MIN_LEN + data.len();
-    let mut buf = BytesMut::with_capacity(MSG_LEN_LEN + msg_len);
+    let msg_len = MSG_MIN_LEN_PIECE + data.len();
+    let mut buf = buf_with_len(msg_len);
 
-    buf.put_u32(msg_len as u32);
     buf.put_u8(MSG_CODE_PIECE);
     buf.put_u32(index);
     buf.put_u32(begin);
@@ -141,14 +181,17 @@ fn serialize_piece(index: u32, begin: u32, data: &[u8]) -> Bytes {
     buf.freeze()
 }
 
-fn serialize_bitfield(bits: &BitVec) -> Bytes {
-    let mut buf = BytesMut::with_capacity(MSG_LEN_LEN + MSG_TYPE_LEN + bits.len());
+fn serialize_cancel(index: u32, begin: u32, piece: u32) -> Bytes {
+    let mut buf = buf_with_len(MSG_LEN_CANCEL);
 
-    buf.put_u32(bits.len() as u32);
-    unimplemented!()
+    buf.put_u8(MSG_CODE_CANCEL);
+    buf.put_u32(index);
+    buf.put_u32(begin);
+    buf.put_u32(piece);
 
+    buf.freeze()
 }
- 
+
 #[derive(PartialEq)]
 pub enum Handshake<'a> {
     Bittorrent(&'a Hash, &'a PeerId),
@@ -179,7 +222,7 @@ where
         if !self.buf.is_empty() {
             panic!("wrong usage of read_handshake");
         }
-        while nbytes < BITTORRENT_HANDSHAKE_LEN {
+        while nbytes < MSG_LEN_BITTORRENT_HANDSHAKE {
             nbytes += self
                 .stream
                 .read_buf(&mut self.buf)
@@ -187,7 +230,7 @@ where
                 .map_err(BitterMistake::new_err)?;
         }
 
-        let slice = &self.buf[ptr..ptr + BITTORRENT_HANDSHAKE_LEN];
+        let slice = &self.buf[ptr..ptr + MSG_LEN_BITTORRENT_HANDSHAKE];
 
         let len = slice[0];
         ptr = 1;
@@ -280,7 +323,7 @@ fn parse_request(buf: &[u8]) -> BitterResult<Packet> {
 }
 
 fn parse_piece(buf: &[u8]) -> BitterResult<Packet> {
-    if buf.len() < PIECE_MSG_MIN_LEN - MSG_TYPE_LEN {
+    if buf.len() < MSG_MIN_LEN_PIECE - MSG_TYPE_LEN {
         return Err(BitterMistake::new(INCORRECT_LEN_ERROR));
     }
     let (index_buf, buf) = buf.split_at(4);
@@ -302,7 +345,7 @@ fn parse_cancel(buf: &[u8]) -> BitterResult<Packet> {
 }
 
 fn parse_request_internal(buf: &[u8]) -> BitterResult<(u32, u32, u32)> {
-    if buf.len() != REQUEST_MSG_LEN - MSG_TYPE_LEN {
+    if buf.len() != MSG_LEN_REQUEST - MSG_TYPE_LEN {
         return Err(BitterMistake::new(INCORRECT_LEN_ERROR));
     }
 
