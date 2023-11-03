@@ -20,7 +20,7 @@ use crate::{
     utils::{roundup_div, BitterMistake, BitterResult},
 };
 
-const CHUNK_LEN: u32 = u32::pow(2, 15); // 32 KB
+const PACKET_PIECE_LEN: u32 = u32::pow(2, 15); // 32 KB
 const MAX_PIECE_SIZE: u32 = u32::pow(2, 17); // 128 KB
 
 #[derive(Clone)]
@@ -79,7 +79,7 @@ impl<'a> PeerHandler<'a> {
     ) -> BitterResult<()> {
         self.verify_piece(index, begin, data)?;
 
-        let chunk_no = (begin / CHUNK_LEN) as usize;
+        let chunk_no = (begin / PACKET_PIECE_LEN) as usize;
         let piece_pos_opt = self
             .in_progress
             .iter_mut()
@@ -100,7 +100,7 @@ impl<'a> PeerHandler<'a> {
             None => {
                 let mut chunks = Vec::with_capacity(roundup_div(
                     self.params.metainfo.piece_length,
-                    CHUNK_LEN,
+                    PACKET_PIECE_LEN,
                 ) as usize);
                 chunks.fill(None);
                 chunks.insert(chunk_no, Some(data.to_owned()));
@@ -144,14 +144,14 @@ impl<'a> PeerHandler<'a> {
         if index >= self.params.metainfo.pieces.len() as u32 {
             return Err(BitterMistake::new("Piece index out of bounds"));
         }
-        if begin + CHUNK_LEN > self.params.metainfo.piece_length {
+        if begin + PACKET_PIECE_LEN > self.params.metainfo.piece_length {
             return Err(BitterMistake::new("Received chunk outside of piece bounds"));
         }
-        if begin % CHUNK_LEN != 0 {
+        if begin % PACKET_PIECE_LEN != 0 {
             return Err(BitterMistake::new("Received chunk at weird offset"));
         }
 
-        if data.len() as u32 > CHUNK_LEN {
+        if data.len() as u32 > PACKET_PIECE_LEN {
             return Err(BitterMistake::new("Received chunk of unexpected size"));
         }
 
@@ -238,9 +238,12 @@ struct FilesToWrite<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{path::PathBuf};
 
-    use crate::metainfo::{Hash, MetainfoFile, MetainfoInfo};
+    use tempdir::TempDir;
+    use tokio::{fs::File, io::AsyncReadExt};
+
+    use crate::{metainfo::{Hash, MetainfoFile, MetainfoInfo}, peer::{PACKET_PIECE_LEN, save_piece}};
 
     use super::{identify_files_to_write, FilesToWrite};
 
@@ -378,5 +381,20 @@ mod tests {
                 files: vec![(&f1, 2), (&f2, 2), (&f3, 3)],
             }
         );
+    }
+
+    #[tokio::test]
+    async fn save_piece_basic() {
+        let tmpdir = TempDir::new("").unwrap();
+        let mut file = tmpdir.into_path();
+        file.set_file_name("basic_test_file");
+        let hash: Hash = [0x51, 0x88, 0x43,0x18, 0x49, 0xb4, 0x61, 0x31, 0x52,0xfd, 0x7b, 0xdb, 0xa6, 0xa3, 0xff, 0x0a, 0x4f, 0xd6, 0x42, 0x4b];
+        let piece: Vec<u8> = vec![0; PACKET_PIECE_LEN as usize];
+        let meta = MetainfoInfo { name: String::new(), piece_length: PACKET_PIECE_LEN, pieces: vec![hash], files: vec![MetainfoFile{ length: PACKET_PIECE_LEN, path: file.clone()} ], hash: Hash::default() };
+        save_piece(&meta, 0, &vec![&piece]).await.unwrap();
+        let mut written_file = File::open(file).await.unwrap();
+        let mut piece_from_file = Vec::with_capacity(PACKET_PIECE_LEN as usize);
+        written_file.read_to_end(&mut piece_from_file).await.unwrap();
+        assert_eq!(piece, piece_from_file, "file should be the same as the submitted piece");
     }
 }

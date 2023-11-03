@@ -12,3 +12,6 @@ rand = "0.8.5"
 sha1 = "0.10.5"
 tokio = { version = "1.29.1", features = ["full"] }
 ureq = "2.7.1"
+
+[dev-dependencies]
+tempdir = "0.3.7"
