@@ -30,7 +30,7 @@ pub fn run(filename: &str, settings: Settings) -> BitterResult<()> {
     println!("Metadata file:");
     print!("{:#?}", parsed_metainfo);
 
-    setup_dirs(&parsed_metainfo.info.files)?;
+    // setup_dirs(&parsed_metainfo.info.files)?;
     download(parsed_metainfo, settings)
 }
 

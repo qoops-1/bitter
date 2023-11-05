@@ -1,8 +1,4 @@
-use std::{
-    io::SeekFrom,
-    path::Path,
-    sync::Arc,
-};
+use std::{io::SeekFrom, path::Path, sync::Arc};
 
 use bit_vec::BitVec;
 use sha1::{Digest, Sha1};
@@ -188,12 +184,13 @@ async fn save_piece(
 
         while len > 0 {
             let c_write;
-            if chunks[c_no].len() > c_offset + len {
+            if chunks[c_no].len() - c_offset > len {
                 c_write = &chunks[c_no][c_offset..c_offset + len];
                 c_offset += len;
             } else {
                 c_write = &chunks[c_no][c_offset..];
                 c_no += 1;
+                c_offset = 0;
             }
             file.write_all(c_write)
                 .await
@@ -489,6 +486,70 @@ mod tests {
         received.append(&mut twos.clone());
         received.append(&mut threes.clone());
         save_piece(0, plen, &vec![&received], &files).await.unwrap();
+        let mut written_file1 = File::open(&file1).await.unwrap();
+        let mut written_file2 = File::open(&file2).await.unwrap();
+        let mut written_file3 = File::open(&file3).await.unwrap();
+        let mut piece_from_file = Vec::with_capacity(plen);
+        written_file1
+            .read_to_end(&mut piece_from_file)
+            .await
+            .unwrap();
+
+        assert_eq!(ones, piece_from_file, "first file must contain 1s");
+
+        piece_from_file.clear();
+        written_file2
+            .read_to_end(&mut piece_from_file)
+            .await
+            .unwrap();
+
+        assert_eq!(twos, piece_from_file, "second file must contain 2s");
+
+        piece_from_file.clear();
+        written_file3
+            .read_to_end(&mut piece_from_file)
+            .await
+            .unwrap();
+
+        assert_eq!(threes, piece_from_file, "third file must contain 3s");
+    }
+
+    #[tokio::test]
+    async fn save_piece_multichunk_to_multiple_files() {
+        let plen: usize = 20;
+        let tmpdir = TempDir::new("bittertest").unwrap();
+        let tmppath = tmpdir.path();
+        let mut file1 = tmppath.to_owned();
+        file1.push("test_multifile1");
+        let mut file2 = tmppath.to_owned();
+        file2.push("test_multifile2");
+        let mut file3 = tmppath.to_owned();
+        file3.push("test_multifile3");
+
+        let files = vec![
+            MetainfoFile {
+                length: plen as u32 / 2,
+                path: file1.clone(),
+            },
+            MetainfoFile {
+                length: plen as u32 / 4,
+                path: file2.clone(),
+            },
+            MetainfoFile {
+                length: plen as u32,
+                path: file3.clone(),
+            },
+        ];
+        let ones = vec![1 as u8; 10];
+        let twos = vec![2 as u8; 5];
+        let threes = vec![3 as u8; 5];
+        let chunk1 = ones[..5].to_vec();
+        let chunk2 = vec![&ones[5..], &twos[..2]].concat();
+        let chunk3 = vec![&twos[2..], &threes].concat();
+
+        save_piece(0, plen, &vec![&chunk1, &chunk2, &chunk3], &files)
+            .await
+            .unwrap();
         let mut written_file1 = File::open(&file1).await.unwrap();
         let mut written_file2 = File::open(&file2).await.unwrap();
         let mut written_file3 = File::open(&file3).await.unwrap();
