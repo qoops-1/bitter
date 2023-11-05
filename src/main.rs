@@ -5,6 +5,8 @@ use std::{
     process::exit,
 };
 
+const REQUEST_PIECE_LEN: usize = usize::pow(2, 14); // 16 KB
+
 fn main() {
     let args: Vec<_> = env::args().collect();
     if args.len() != 2 {
@@ -19,6 +21,7 @@ fn main() {
     let settings = Settings {
         port: 6881,
         ip: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+        req_piece_len: REQUEST_PIECE_LEN,
     };
 
     run(filename, settings).unwrap_or_else(|err| {

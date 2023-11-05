@@ -21,6 +21,7 @@ mod utils;
 pub struct Settings {
     pub port: u16,
     pub ip: IpAddr,
+    pub req_piece_len: usize,
 }
 
 pub fn run(filename: &str, settings: Settings) -> BitterResult<()> {

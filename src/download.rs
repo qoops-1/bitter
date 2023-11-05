@@ -71,6 +71,7 @@ impl Downloader {
                 .expect("peer_id contains more bytes than expected"),
             info_hash: metainfo.info.hash,
             metainfo: Arc::new(metainfo.info),
+            req_piece_len: self.settings.req_piece_len,
         };
 
         self.peers.extend(announce_resp.peers);
