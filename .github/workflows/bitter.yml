@@ -42,5 +42,9 @@ jobs:
         curl -sL "$release_url" | sudo tar xvj -C /usr/local/bin/
     - name: Generate and upload coverage report
       run: |
-        grcov . -s . --keep-only src/**/*.rs --binary-path ./target/debug/ -t coveralls+ --commit-sha $GITHUB_SHA --vcs-branch $GITHUB_REF_NAME --token ${{ secrets.COVERALLS_TOKEN }} --branch -o coverage.json
+        grcov . -s . --keep-only src/**/*.rs --binary-path ./target/debug/ -t coveralls+ --commit-sha $GITHUB_SHA \
+            --vcs-branch $GITHUB_REF_NAME --excl-start '^(pub(\((crate|super)\))? )?mod tests' \
+            --excl-stop '^}' \
+            --ignore="*/tests/*" \
+            --token ${{ secrets.COVERALLS_TOKEN }} --branch -o coverage.json
         curl -X POST https://coveralls.io/api/v1/jobs -F 'json_file=@coverage.json'
