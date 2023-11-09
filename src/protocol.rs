@@ -202,7 +202,7 @@ pub struct TcpConn<T>
 where
     T: Sized + Unpin + AsyncRead + AsyncWrite,
 {
-    stream: T,
+    inner: T,
     buf: BytesMut,
 }
 
@@ -212,7 +212,7 @@ where
 {
     pub fn new(stream: T) -> TcpConn<T> {
         let buf = BytesMut::with_capacity(BUF_SIZE);
-        return TcpConn { buf, stream };
+        return TcpConn { buf, inner: stream };
     }
 
     pub async fn read_handshake(&mut self) -> BitterResult<Handshake> {
@@ -224,7 +224,7 @@ where
         }
         while nbytes < MSG_LEN_BITTORRENT_HANDSHAKE {
             nbytes += self
-                .stream
+                .inner
                 .read_buf(&mut self.buf)
                 .await
                 .map_err(BitterMistake::new_err)?;
@@ -263,7 +263,7 @@ where
 
         while nbytes < MSG_LEN_LEN {
             nbytes += self
-                .stream
+                .inner
                 .read_buf(&mut self.buf)
                 .await
                 .map_err(BitterMistake::new_err)?;
@@ -278,7 +278,7 @@ where
         nbytes = 0;
         while nbytes < msg_len {
             nbytes += self
-                .stream
+                .inner
                 .read_buf(&mut self.buf)
                 .await
                 .map_err(BitterMistake::new_err)?;
@@ -289,7 +289,7 @@ where
     pub async fn write<'a>(&mut self, packet: &Packet<'a>) -> BitterResult<()> {
         let mut buf = packet.serialize();
         while buf.has_remaining() {
-            self.stream
+            self.inner
                 .write_buf(&mut buf)
                 .await
                 .map_err(BitterMistake::new_err)?;
@@ -298,7 +298,7 @@ where
     }
 
     pub async fn close(&mut self) {
-        self.stream.shutdown().await;
+        self.inner.shutdown().await;
     }
 }
 
@@ -351,7 +351,7 @@ fn parse_request_internal(buf: &[u8]) -> BitterResult<(u32, u32, u32)> {
 
     let (index_buf, buf) = buf.split_at(4);
     let (begin_buf, buf) = buf.split_at(4);
-    let (piece_buf, buf) = buf.split_at(4);
+    let piece_buf = &buf[..4];
 
     let index = u32::from_be_bytes(index_buf.try_into().unwrap());
     let begin = u32::from_be_bytes(begin_buf.try_into().unwrap());

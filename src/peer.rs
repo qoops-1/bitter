@@ -1,6 +1,7 @@
 use std::{io::SeekFrom, path::Path, sync::Arc};
 
 use bit_vec::BitVec;
+use rand::{thread_rng, RngCore};
 use sha1::{Digest, Sha1};
 use tokio::{
     fs::OpenOptions,
@@ -50,15 +51,26 @@ impl<'a> PeerHandler<'a> {
     ) -> BitterResult<()> {
         loop {
             let packet = conn.read().await?;
+            let mut needs_request = false;
 
             match packet {
                 Packet::Piece { index, begin, data } => {
-                    self.handle_piece(index, begin, data).await?
+                    self.handle_piece(index, begin, data).await?;
+                    needs_request = true;
                 }
+                Packet::Have(i) => self.handle_have(i),
                 Packet::Bitfield(bitmap) => self.handle_bitfield(bitmap),
                 _ => unimplemented!(),
             }
+            if needs_request
+            {
+                self.request_new_piece();
+            }
         }
+    }
+
+    fn handle_have(&mut self, index: u32) {
+        self.acct.mark_available(index as usize);
     }
 
     fn handle_bitfield(&mut self, bv: BitVec) {
@@ -153,6 +165,12 @@ impl<'a> PeerHandler<'a> {
         }
 
         Ok(())
+    }
+
+    async fn request_new_piece(&self) {
+        let mut rng = thread_rng();
+        let mut rand_bytes: Vec<u8> = vec![0; self.acct.len_available()];
+        rng.fill_bytes(&mut rand_bytes);
     }
 }
 

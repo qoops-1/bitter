@@ -20,7 +20,7 @@ impl Accounting {
         reserved.fill_with(AtomicBool::default);
 
         return Accounting {
-            available: BitVec::with_capacity(0),
+            available: BitVec::new(),
             downloaded: Arc::new(downloaded),
             reserved: Arc::new(reserved),
         };
@@ -32,6 +32,10 @@ impl Accounting {
 
     pub fn mark_available(&mut self, pieceno: usize) {
         self.available.set(pieceno, true);
+    }
+
+    pub fn len_available(&self) -> usize {
+        self.available.len()
     }
 
     pub fn piece_downloaded(&self, pieceno: usize) -> bool {
