@@ -4,11 +4,10 @@ use std::sync::{
 };
 
 use bit_vec::BitVec;
-use rand::{rngs::ThreadRng, seq::SliceRandom, thread_rng, Rng};
+use rand::{seq::SliceRandom, thread_rng, Rng};
 
 #[derive(Clone)]
 pub struct Accounting {
-    rng: ThreadRng,
     available: Vec<usize>,
     downloaded: Arc<Vec<AtomicBool>>,
     reserved: Arc<Vec<AtomicBool>>,
@@ -22,7 +21,6 @@ impl Accounting {
         reserved.fill_with(AtomicBool::default);
 
         return Accounting {
-            rng: thread_rng(),
             available: Vec::with_capacity(0),
             downloaded: Arc::new(downloaded),
             reserved: Arc::new(reserved),
@@ -30,6 +28,7 @@ impl Accounting {
     }
 
     pub fn init_available(&mut self, available: BitVec) {
+        let mut rng = thread_rng();
         let mut avail_pieces: Vec<usize> = available
             .iter()
             .enumerate()
@@ -37,12 +36,13 @@ impl Accounting {
             .map(|(i, _)| i)
             .collect();
 
-        avail_pieces.shuffle(&mut self.rng);
+        avail_pieces.shuffle(&mut rng);
         self.available = avail_pieces;
     }
 
     pub fn mark_available(&mut self, pieceno: usize) {
-        let spot: usize = self.rng.gen();
+        let mut rng = thread_rng();
+        let spot: usize = rng.gen();
         if spot == self.available.len() {
             self.available.push(pieceno);
             return;
@@ -51,7 +51,7 @@ impl Accounting {
         self.available[spot] = pieceno;
     }
 
-    pub fn get_next_to_download(&self) -> Option<usize> {
+    pub fn get_next_to_download(&mut self) -> Option<usize> {
         while let Some(i) = self.available.pop() {
             if !self.reserved[i].swap(true, Ordering::Acquire) {
                 return Some(i);

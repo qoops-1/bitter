@@ -1,7 +1,6 @@
 use std::{io::SeekFrom, path::Path, sync::Arc};
 
 use bit_vec::BitVec;
-use rand::{thread_rng, RngCore};
 use sha1::{Digest, Sha1};
 use tokio::{
     fs::OpenOptions,
@@ -30,27 +29,46 @@ pub struct PeerHandler<'a> {
     params: &'a DownloadParams,
     ptracker: PieceTracker,
 }
-struct PieceInProgress {
-    index: u32,
-    chunks: Vec<Option<Vec<u8>>>,
-}
+
 struct PieceTracker {
     pcs: Vec<PieceInProgress>,
     chunk_len: usize,
     piece_len: u32,
 }
 
+struct PieceInProgress {
+    index: u32,
+    chunks: Vec<ChunkStatus>,
+}
+
+#[derive(Clone)]
+enum ChunkStatus {
+    Missing,
+    Downloading,
+    Present(Vec<u8>)
+}
+
 type PieceStatus = Option<Vec<Vec<u8>>>;
 
 impl PieceTracker {
-    fn track_piece(&self, index: u32) {
-        let mut chunks =
-            Vec::with_capacity(roundup_div(self.piece_len, self.chunk_len as u32) as usize);
-        chunks.fill(None);
-        self.pcs.push(PieceInProgress { index, chunks })
+    fn download_started(&mut self, index: u32, begin: u32) {
+        let piece = match self.pcs.iter_mut().find(|p| p.index == index) {
+            Some(p) => p,
+            None => {
+            let mut chunks = Vec::with_capacity(roundup_div(self.piece_len, self.chunk_len as u32) as usize);
+            
+            chunks.fill(ChunkStatus::Missing);
+            self.pcs.push(PieceInProgress { index, chunks });
+            self.pcs.last_mut().unwrap()
+            }
+        };
+
+        let chunk_no = begin as usize / self.chunk_len;
+
+        piece.chunks[chunk_no] = ChunkStatus::Downloading;
     }
 
-    fn add_chunk<'b>(
+    fn complete_chunk<'b>(
         &mut self,
         index: u32,
         begin: u32,
@@ -67,30 +85,42 @@ impl PieceTracker {
             "Piece {index} is not being downloaded"
         )))?;
         match self.pcs[piece_pos].chunks[chunk_no] {
-            Some(_) => {
+            ChunkStatus::Present(_) => {
                 return Err(BitterMistake::new_owned(format!(
                     "Piece {index}+{begin} is already received"
                 )))
-            }
-            None => self.pcs[piece_pos].chunks[chunk_no] = Some(data.to_owned()),
+            },
+            _ => self.pcs[piece_pos].chunks[chunk_no] = ChunkStatus::Present(data.to_owned()),
         };
-        if self.pcs[piece_pos].chunks.contains(&None) {
+        if self.pcs[piece_pos].chunks.iter().find(|c| !matches!(c, ChunkStatus::Present(_))).is_some() {
             return Ok(None)
         }
 
-        let full_piece = self
+        let full_piece: Vec<Vec<u8>> = self
             .pcs
             .remove(piece_pos)
             .chunks
             .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
+            .filter_map(|c| {
+                match c {
+                    ChunkStatus::Present(c) => Some(c),
+                    _ => None,
+                }
+            })
+            .collect();
 
         Ok(Some(full_piece))
     }
 
     fn next_missing_chunk(&self) -> Option<(u32, u32)> {
-        unimplemented!()
+        for p in &  self.pcs {
+            for (chunk_no, c) in p.chunks.iter().enumerate() {
+                if matches!(c, ChunkStatus::Missing) {
+                    return Some((p.index, (chunk_no * self.chunk_len) as u32))
+                } 
+            }
+        }
+        None
     }
 }
 
@@ -123,7 +153,7 @@ impl<'a> PeerHandler<'a> {
                 }
                 Packet::Have(i) => self.handle_have(i),
                 Packet::Bitfield(bitmap) => self.handle_bitfield(bitmap),
-                _ => unimplemented!(),
+                _ => return Err(BitterMistake::new("Received unknown packet")),
             }
             if needs_request {
                 self.request_new_piece(conn).await?;
@@ -147,7 +177,7 @@ impl<'a> PeerHandler<'a> {
     ) -> BitterResult<()> {
         self.verify_piece(index, begin, data)?;
 
-        if let Some(full_piece) = self.ptracker.add_chunk(index, begin, data)? {
+        if let Some(full_piece) = self.ptracker.complete_chunk(index, begin, data)? {
                 // TODO: on hash mismatch re-request piece
                 self.verify_hash(index, &full_piece)?;
                 save_piece(
@@ -194,7 +224,7 @@ impl<'a> PeerHandler<'a> {
     }
 
     async fn request_new_piece<T: Unpin + AsyncRead + AsyncWrite>(
-        &self,
+        &mut self,
         conn: &mut TcpConn<T>,
     ) -> BitterResult<()> {
         let next_chunk_opt = self.ptracker.next_missing_chunk().or_else(|| self.acct.get_next_to_download().map(|p| (p as u32, 0)));
@@ -203,7 +233,7 @@ impl<'a> PeerHandler<'a> {
             None => return Ok(()),
         };
 
-        self.ptracker.track_piece(index);
+        self.ptracker.download_started(index, begin);
         conn.write(&Packet::Request {
             index,
             begin,
@@ -308,7 +338,7 @@ mod tests {
     use tokio::{fs::File, io::AsyncReadExt};
 
     use crate::{
-        metainfo::{Hash, MetainfoFile, MetainfoInfo},
+        metainfo::MetainfoFile,
         peer::save_piece,
     };
 
