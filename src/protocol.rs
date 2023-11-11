@@ -49,7 +49,7 @@ pub enum Packet<'a> {
     Request {
         index: u32,
         begin: u32,
-        piece: u32,
+        length: u32,
     },
     Piece {
         index: u32,
@@ -59,7 +59,7 @@ pub enum Packet<'a> {
     Cancel {
         index: u32,
         begin: u32,
-        piece: u32,
+        length: u32,
     },
     Handshake(Handshake<'a>),
     Keepalive,
@@ -95,14 +95,14 @@ impl<'a> Packet<'a> {
             Packet::Request {
                 index,
                 begin,
-                piece,
-            } => serialize_request(*index, *begin, *piece),
+                length,
+            } => serialize_request(*index, *begin, *length),
             Packet::Piece { index, begin, data } => serialize_piece(*index, *begin, data),
             Packet::Cancel {
                 index,
                 begin,
-                piece,
-            } => serialize_cancel(*index, *begin, *piece),
+                length,
+            } => serialize_cancel(*index, *begin, *length),
             _ => unimplemented!(),
         }
     }
@@ -315,10 +315,10 @@ fn parse_bitfield(buf: &[u8]) -> BitterResult<Packet> {
 }
 
 fn parse_request(buf: &[u8]) -> BitterResult<Packet> {
-    parse_request_internal(buf).map(|(index, begin, piece)| Packet::Request {
+    parse_request_internal(buf).map(|(index, begin, length)| Packet::Request {
         index,
         begin,
-        piece,
+        length,
     })
 }
 
@@ -337,10 +337,10 @@ fn parse_piece(buf: &[u8]) -> BitterResult<Packet> {
 }
 
 fn parse_cancel(buf: &[u8]) -> BitterResult<Packet> {
-    parse_request_internal(buf).map(|(index, begin, piece)| Packet::Cancel {
+    parse_request_internal(buf).map(|(index, begin, length)| Packet::Cancel {
         index,
         begin,
-        piece,
+        length,
     })
 }
 
