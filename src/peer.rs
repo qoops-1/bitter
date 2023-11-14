@@ -1,10 +1,11 @@
-use std::{io::SeekFrom, path::Path, sync::Arc};
+use std::{io::SeekFrom, marker::PhantomData, path::Path, sync::Arc};
 
 use bit_vec::BitVec;
+use bytes::{Bytes, BytesMut};
 use sha1::{Digest, Sha1};
 use tokio::{
     fs::OpenOptions,
-    io::{AsyncRead, AsyncSeekExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt},
 };
 
 use crate::{
@@ -14,7 +15,8 @@ use crate::{
     utils::{roundup_div, BitterMistake, BitterResult},
 };
 
-const MAX_REQUEST_PIECE_LEN: u32 = u32::pow(2, 16); // 64 KB
+const MAX_CHUNK_LEN: u32 = u32::pow(2, 16); // 64 KB
+const MAX_REQUESTS_INFLIGHT: usize = 5;
 
 #[derive(Clone)]
 pub struct DownloadParams {
@@ -24,13 +26,19 @@ pub struct DownloadParams {
     pub req_piece_len: usize,
 }
 
-pub struct PeerHandler<'a> {
+pub struct PeerHandler<'a, T> {
     acct: Accounting,
     params: &'a DownloadParams,
-    ptracker: PieceTracker,
+    ptracker: ProgressTracker,
+    choked: bool,
+    peer_choked: bool,
+    interested: bool,
+    peer_interested: bool,
+    // Here just to be able to make peer handler generic, instead of having to declare every method generic. Not sure whether this is a good idea.
+    phantom: PhantomData<T>,
 }
 
-struct PieceTracker {
+struct ProgressTracker {
     pcs: Vec<PieceInProgress>,
     chunk_len: usize,
     piece_len: u32,
@@ -45,21 +53,22 @@ struct PieceInProgress {
 enum ChunkStatus {
     Missing,
     Downloading,
-    Present(Vec<u8>)
+    Present(Vec<u8>),
 }
 
 type PieceStatus = Option<Vec<Vec<u8>>>;
 
-impl PieceTracker {
+impl ProgressTracker {
     fn download_started(&mut self, index: u32, begin: u32) {
         let piece = match self.pcs.iter_mut().find(|p| p.index == index) {
             Some(p) => p,
             None => {
-            let mut chunks = Vec::with_capacity(roundup_div(self.piece_len, self.chunk_len as u32) as usize);
-            
-            chunks.fill(ChunkStatus::Missing);
-            self.pcs.push(PieceInProgress { index, chunks });
-            self.pcs.last_mut().unwrap()
+                let mut chunks =
+                    Vec::with_capacity(roundup_div(self.piece_len, self.chunk_len as u32) as usize);
+
+                chunks.fill(ChunkStatus::Missing);
+                self.pcs.push(PieceInProgress { index, chunks });
+                self.pcs.last_mut().unwrap()
             }
         };
 
@@ -89,11 +98,16 @@ impl PieceTracker {
                 return Err(BitterMistake::new_owned(format!(
                     "Piece {index}+{begin} is already received"
                 )))
-            },
+            }
             _ => self.pcs[piece_pos].chunks[chunk_no] = ChunkStatus::Present(data.to_owned()),
         };
-        if self.pcs[piece_pos].chunks.iter().find(|c| !matches!(c, ChunkStatus::Present(_))).is_some() {
-            return Ok(None)
+        if self.pcs[piece_pos]
+            .chunks
+            .iter()
+            .find(|c| !matches!(c, ChunkStatus::Present(_)))
+            .is_some()
+        {
+            return Ok(None);
         }
 
         let full_piece: Vec<Vec<u8>> = self
@@ -101,11 +115,9 @@ impl PieceTracker {
             .remove(piece_pos)
             .chunks
             .into_iter()
-            .filter_map(|c| {
-                match c {
-                    ChunkStatus::Present(c) => Some(c),
-                    _ => None,
-                }
+            .filter_map(|c| match c {
+                ChunkStatus::Present(c) => Some(c),
+                _ => None,
             })
             .collect();
 
@@ -113,20 +125,33 @@ impl PieceTracker {
     }
 
     fn next_missing_chunk(&self) -> Option<(u32, u32)> {
-        for p in &  self.pcs {
+        for p in &self.pcs {
             for (chunk_no, c) in p.chunks.iter().enumerate() {
                 if matches!(c, ChunkStatus::Missing) {
-                    return Some((p.index, (chunk_no * self.chunk_len) as u32))
-                } 
+                    return Some((p.index, (chunk_no * self.chunk_len) as u32));
+                }
             }
         }
         None
     }
+
+    fn reset_downloading(&mut self) {
+        for p in &mut self.pcs {
+            for c in &mut p.chunks {
+                if matches!(c, ChunkStatus::Downloading) {
+                    *c = ChunkStatus::Missing;
+                }
+            }
+        }
+    }
 }
 
-impl<'a> PeerHandler<'a> {
-    pub fn new(params: &'a DownloadParams, acct: Accounting) -> PeerHandler {
-        let ptracker = PieceTracker {
+impl<'a, T> PeerHandler<'a, T>
+where
+    T: Unpin + AsyncRead + AsyncWrite,
+{
+    pub fn new(params: &'a DownloadParams, acct: Accounting) -> PeerHandler<T> {
+        let ptracker = ProgressTracker {
             pcs: Vec::new(),
             chunk_len: params.req_piece_len,
             piece_len: params.metainfo.piece_length,
@@ -135,38 +160,112 @@ impl<'a> PeerHandler<'a> {
             acct,
             params,
             ptracker,
+            choked: true,
+            peer_choked: true,
+            interested: false,
+            peer_interested: false,
+            phantom: PhantomData,
         }
     }
 
-    pub async fn run<T: Unpin + AsyncRead + AsyncWrite>(
-        &mut self,
-        conn: &mut TcpConn<T>,
-    ) -> BitterResult<()> {
+    pub async fn run(&mut self, conn: &mut TcpConn<T>) -> BitterResult<()> {
         loop {
             let packet = conn.read().await?;
             let mut needs_request = false;
 
             match packet {
+                Packet::Choke => self.handle_choke(),
+                Packet::Unchoke => self.handle_unchoke(conn).await?,
+                Packet::Interested => self.handle_interested(),
+                Packet::NotInterested => self.handle_not_interested(),
+                Packet::Have(i) => self.handle_have(i, conn).await?,
+                Packet::Bitfield(bitmap) => self.handle_bitfield(bitmap, conn).await?,
+                Packet::Request {
+                    index,
+                    begin,
+                    length,
+                } => self.handle_request(index, begin, length, conn).await?,
                 Packet::Piece { index, begin, data } => {
                     self.handle_piece(index, begin, data).await?;
                     needs_request = true;
                 }
-                Packet::Have(i) => self.handle_have(i),
-                Packet::Bitfield(bitmap) => self.handle_bitfield(bitmap),
+                Packet::Cancel {
+                    index,
+                    begin,
+                    length,
+                } => self.handle_cancel(index, begin, length),
                 _ => return Err(BitterMistake::new("Received unknown packet")),
             }
-            if needs_request {
+            if needs_request && !self.choked {
                 self.request_new_piece(conn).await?;
             }
         }
     }
 
-    fn handle_have(&mut self, index: u32) {
-        self.acct.mark_available(index as usize);
+    fn handle_choke(&mut self) {
+        self.choked = true;
+        // TODO: discard reservations and try to get them again on unchoke
+        self.ptracker.reset_downloading();
     }
 
-    fn handle_bitfield(&mut self, bv: BitVec) {
+    async fn handle_unchoke(&mut self, conn: &mut TcpConn<T>) -> BitterResult<()> {
+        self.choked = false;
+        self.ramp_up_piece_requests(conn).await
+    }
+
+    fn handle_interested(&mut self) {
+        self.peer_interested = true;
+        todo!()
+    }
+
+    fn handle_not_interested(&mut self) {
+        self.peer_interested = false;
+        todo!()
+    }
+
+    async fn handle_have(&mut self, index: u32, conn: &mut TcpConn<T>) -> BitterResult<()> {
+        self.acct.mark_available(index as usize);
+        if !self.interested && !self.acct.piece_is_reserved(index as usize) {
+            conn.write(&Packet::Interested).await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_bitfield(&mut self, bv: BitVec, conn: &mut TcpConn<T>) -> BitterResult<()> {
         self.acct.init_available(bv);
+        if self.acct.have_next_to_download() {
+            assert!(!self.interested);
+            conn.write(&Packet::Interested).await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_request(
+        &self,
+        piece_no: u32,
+        chunk_offset: u32,
+        chunk_len: u32,
+        conn: &mut TcpConn<T>,
+    ) -> BitterResult<()> {
+        self.verify_piece(piece_no, chunk_offset, chunk_len)?;
+        if chunk_len > MAX_CHUNK_LEN {
+            return Err(BitterMistake::new("Requested piece length too long"));
+        }
+
+        let chunk = read_chunk(
+            piece_no,
+            chunk_offset,
+            chunk_len,
+            &self.params.metainfo.files,
+        )
+        .await?;
+
+        conn.write(&Packet::Piece {
+            index: piece_no,
+            begin: chunk_offset,
+            data: &chunk,
+        })
+        .await
     }
 
     async fn handle_piece<'b>(
@@ -175,20 +274,25 @@ impl<'a> PeerHandler<'a> {
         begin: u32,
         data: &'b [u8],
     ) -> BitterResult<()> {
-        self.verify_piece(index, begin, data)?;
+        self.verify_piece(index, begin, data.len() as u32)?;
 
         if let Some(full_piece) = self.ptracker.complete_chunk(index, begin, data)? {
-                // TODO: on hash mismatch re-request piece
-                self.verify_hash(index, &full_piece)?;
-                save_piece(
-                    index,
-                    self.params.req_piece_len,
-                    &full_piece,
-                    &self.params.metainfo.files,
-                )
-                .await?;
+            // TODO: on hash mismatch re-request piece
+            self.verify_hash(index, &full_piece)?;
+            save_piece(
+                index,
+                self.params.req_piece_len,
+                &full_piece,
+                &self.params.metainfo.files,
+            )
+            .await?;
+            self.acct.mark_downloaded(index as usize);
         }
         Ok(())
+    }
+
+    fn handle_cancel(&self, _index: u32, _begin: u32, length: u32) {
+        // Nothing to do right now, we're processing requests as they come and must've already sent the piece
     }
 
     fn verify_hash(&self, index: u32, chunks: &Vec<Vec<u8>>) -> BitterResult<()> {
@@ -203,34 +307,40 @@ impl<'a> PeerHandler<'a> {
         Ok(())
     }
 
-    fn verify_piece<'b>(&self, index: u32, begin: u32, data: &'b [u8]) -> BitterResult<()> {
+    fn verify_piece<'b>(&self, index: u32, begin: u32, length: u32) -> BitterResult<()> {
         let plen = self.params.req_piece_len as u32;
 
         if index >= self.params.metainfo.pieces.len() as u32 {
             return Err(BitterMistake::new("Piece index out of bounds"));
         }
-        if begin + data.len() as u32 > self.params.metainfo.piece_length {
+        if begin + length > self.params.metainfo.piece_length {
             return Err(BitterMistake::new("Received chunk outside of piece bounds"));
         }
         if begin % plen != 0 {
             return Err(BitterMistake::new("Received chunk at weird offset"));
         }
 
-        if data.len() as u32 > plen {
+        if length > plen {
             return Err(BitterMistake::new("Received chunk of unexpected size"));
         }
 
         Ok(())
     }
 
-    async fn request_new_piece<T: Unpin + AsyncRead + AsyncWrite>(
-        &mut self,
-        conn: &mut TcpConn<T>,
-    ) -> BitterResult<()> {
-        let next_chunk_opt = self.ptracker.next_missing_chunk().or_else(|| self.acct.get_next_to_download().map(|p| (p as u32, 0)));
+    async fn request_new_piece(&mut self, conn: &mut TcpConn<T>) -> BitterResult<()> {
+        if !self.interested {
+            return Ok(());
+        }
+        let next_chunk_opt = self
+            .ptracker
+            .next_missing_chunk()
+            .or_else(|| self.acct.get_next_to_download().map(|p| (p as u32, 0)));
         let (index, begin) = match next_chunk_opt {
             Some((pno, cno)) => (pno, cno * self.params.req_piece_len as u32),
-            None => return Ok(()),
+            None => {
+                self.interested = false;
+                return conn.write(&Packet::NotInterested).await;
+            }
         };
 
         self.ptracker.download_started(index, begin);
@@ -241,6 +351,46 @@ impl<'a> PeerHandler<'a> {
         })
         .await
     }
+
+    async fn ramp_up_piece_requests(&mut self, conn: &mut TcpConn<T>) -> BitterResult<()> {
+        for _ in 0..MAX_REQUESTS_INFLIGHT {
+            self.request_new_piece(conn).await?;
+        }
+        Ok(())
+    }
+}
+
+async fn read_chunk(
+    piece_no: u32,
+    chunk_offset: u32,
+    chunk_len: u32,
+    files: &Vec<MetainfoFile>,
+) -> BitterResult<Bytes> {
+    let mut fm = identify_files(piece_no, chunk_offset, chunk_len as usize, files);
+    let mut buf = BytesMut::with_capacity(chunk_len as usize);
+    for (path, mut len) in fm.files {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(path)
+            .await
+            .map_err(BitterMistake::new_err)?;
+
+        if fm.offset != 0 {
+            file.seek(SeekFrom::Start(fm.offset.into()))
+                .await
+                .map_err(BitterMistake::new_err)?;
+            fm.offset = 0;
+        }
+
+        while len > 0 {
+            len -= file
+                .read_buf(&mut buf)
+                .await
+                .map_err(BitterMistake::new_err)?;
+        }
+    }
+
+    Ok(buf.freeze())
 }
 
 // Doesn't care about sizes of chunks, simply determines the files that need to be written via index and meta piece_len, and writes the chunks there sequentially
@@ -250,10 +400,10 @@ async fn save_piece(
     chunks: &Vec<Vec<u8>>,
     files: &Vec<MetainfoFile>,
 ) -> BitterResult<()> {
-    let mut ftow = identify_files_to_write(index, piece_len, files);
+    let mut fm = identify_files(index, 0, piece_len, files);
     let mut c_no: usize = 0;
     let mut c_offset: usize = 0;
-    for (path, mut len) in ftow.files {
+    for (path, mut len) in fm.files {
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
@@ -262,11 +412,11 @@ async fn save_piece(
             .await
             .map_err(BitterMistake::new_err)?;
 
-        if ftow.offset != 0 {
-            file.seek(SeekFrom::Start(ftow.offset.into()))
+        if fm.offset != 0 {
+            file.seek(SeekFrom::Start(fm.offset.into()))
                 .await
                 .map_err(BitterMistake::new_err)?;
-            ftow.offset = 0;
+            fm.offset = 0;
         }
 
         while len > 0 {
@@ -288,16 +438,17 @@ async fn save_piece(
     Ok(())
 }
 
-fn identify_files_to_write(
+fn identify_files(
     index: u32,
+    chunk_offset: u32,
     piece_len: usize,
     files: &Vec<MetainfoFile>,
-) -> FilesToWrite {
+) -> FileMapping {
     let mut start_found = false;
     let mut bytes_seen = 0;
     let mut bytes_to_write = piece_len as u32;
-    let chunk_start = index * piece_len as u32;
-    let mut res = FilesToWrite::default();
+    let chunk_start = index * piece_len as u32 + chunk_offset;
+    let mut res = FileMapping::default();
     for f in files {
         let mut f_len = f.length;
         bytes_seen += f.length;
@@ -325,7 +476,7 @@ fn identify_files_to_write(
 }
 
 #[derive(Default, PartialEq, Eq, Debug)]
-struct FilesToWrite<'a> {
+struct FileMapping<'a> {
     offset: u32,
     files: Vec<(&'a Path, usize)>,
 }
@@ -337,12 +488,9 @@ mod tests {
     use tempdir::TempDir;
     use tokio::{fs::File, io::AsyncReadExt};
 
-    use crate::{
-        metainfo::MetainfoFile,
-        peer::save_piece,
-    };
+    use crate::{metainfo::MetainfoFile, peer::save_piece};
 
-    use super::{identify_files_to_write, FilesToWrite};
+    use super::{identify_files, FileMapping};
 
     #[test]
     fn identify_ftw_whole_file_test() {
@@ -361,15 +509,15 @@ mod tests {
         ];
 
         assert_eq!(
-            identify_files_to_write(0, 4, &files),
-            FilesToWrite {
+            identify_files(0, 0, 4, &files),
+            FileMapping {
                 offset: 0,
                 files: vec![(&f1, 4)],
             }
         );
         assert_eq!(
-            identify_files_to_write(1, 4, &files),
-            FilesToWrite {
+            identify_files(1, 0, 4, &files),
+            FileMapping {
                 offset: 0,
                 files: vec![(&f2, 4)],
             }
@@ -386,15 +534,15 @@ mod tests {
         }];
 
         assert_eq!(
-            identify_files_to_write(1, 4, &files),
-            FilesToWrite {
+            identify_files(1, 0, 4, &files),
+            FileMapping {
                 offset: 4,
                 files: vec![(&f1, 4)],
             }
         );
         assert_eq!(
-            identify_files_to_write(2, 4, &files),
-            FilesToWrite {
+            identify_files(2, 0, 4, &files),
+            FileMapping {
                 offset: 8,
                 files: vec![(&f1, 4)],
             }
@@ -418,8 +566,8 @@ mod tests {
         ];
 
         assert_eq!(
-            identify_files_to_write(1, 4, &files),
-            FilesToWrite {
+            identify_files(1, 0, 4, &files),
+            FileMapping {
                 offset: 4,
                 files: vec![(&f1, 2), (&f2, 2)],
             }
@@ -448,8 +596,8 @@ mod tests {
         ];
 
         assert_eq!(
-            identify_files_to_write(0, 7, &files),
-            FilesToWrite {
+            identify_files(0, 0, 7, &files),
+            FileMapping {
                 offset: 0,
                 files: vec![(&f1, 2), (&f2, 2), (&f3, 3)],
             }
@@ -484,7 +632,9 @@ mod tests {
             "file should be the same as the submitted piece"
         );
 
-        save_piece(1, plen, &vec![h_piece.clone()], &files).await.unwrap();
+        save_piece(1, plen, &vec![h_piece.clone()], &files)
+            .await
+            .unwrap();
 
         written_file = File::open(&file).await.unwrap();
         piece_from_file.clear();
@@ -572,7 +722,9 @@ mod tests {
         let mut received = ones.clone();
         received.append(&mut twos.clone());
         received.append(&mut threes.clone());
-        save_piece(0, plen, &vec![received.clone()], &files).await.unwrap();
+        save_piece(0, plen, &vec![received.clone()], &files)
+            .await
+            .unwrap();
         let mut written_file1 = File::open(&file1).await.unwrap();
         let mut written_file2 = File::open(&file2).await.unwrap();
         let mut written_file3 = File::open(&file3).await.unwrap();
@@ -634,9 +786,14 @@ mod tests {
         let chunk2 = vec![&ones[5..], &twos[..2]].concat();
         let chunk3 = vec![&twos[2..], &threes].concat();
 
-        save_piece(0, plen, &vec![chunk1.clone(), chunk2.clone(), chunk3.clone()], &files)
-            .await
-            .unwrap();
+        save_piece(
+            0,
+            plen,
+            &vec![chunk1.clone(), chunk2.clone(), chunk3.clone()],
+            &files,
+        )
+        .await
+        .unwrap();
         let mut written_file1 = File::open(&file1).await.unwrap();
         let mut written_file2 = File::open(&file2).await.unwrap();
         let mut written_file3 = File::open(&file3).await.unwrap();

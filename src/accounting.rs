@@ -61,19 +61,25 @@ impl Accounting {
         None
     }
 
-    pub fn piece_downloaded(&self, pieceno: usize) -> bool {
+    pub fn have_next_to_download(&mut self) -> bool {
+        for piece_no in &self.available {
+            if !self.reserved[*piece_no].load(Ordering::Acquire) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub fn piece_is_downloaded(&self, pieceno: usize) -> bool {
         self.downloaded[pieceno].load(Ordering::Acquire)
     }
 
-    pub fn piece_reserved(&self, pieceno: usize) -> bool {
-        self.reserved[pieceno].load(Ordering::Acquire)
-    }
-
-    pub fn download(&self, pieceno: usize) -> bool {
+    pub fn mark_downloaded(&self, pieceno: usize) -> bool {
         self.downloaded[pieceno].swap(true, Ordering::Acquire)
     }
 
-    pub fn reserve(&self, pieceno: usize) -> bool {
-        self.reserved[pieceno].swap(true, Ordering::Acquire)
+    pub fn piece_is_reserved(&self, pieceno: usize) -> bool {
+        self.reserved[pieceno].load(Ordering::Acquire)
     }
 }
