@@ -39,6 +39,7 @@ const MSG_CODE_REQUEST: u8 = 6;
 const MSG_CODE_PIECE: u8 = 7;
 const MSG_CODE_CANCEL: u8 = 8;
 
+#[derive(PartialEq, Eq, Debug)]
 pub enum Packet<'a> {
     Choke,
     Unchoke,
@@ -68,17 +69,18 @@ pub enum Packet<'a> {
 impl<'a> Packet<'a> {
     pub fn parse(buf: &'a [u8]) -> BitterResult<Self> {
         let msg_type = buf[0];
+        let msg_buf = &buf[1..];
 
         match msg_type {
             MSG_CODE_CHOKE => Ok(Packet::Choke),
             MSG_CODE_UNCHOKE => Ok(Packet::Unchoke),
             MSG_CODE_INTERESTED => Ok(Packet::Interested),
             MSG_CODE_NOT_INTERESTED => Ok(Packet::NotInterested),
-            MSG_CODE_HAVE => parse_have(buf),
-            MSG_CODE_BITFIELD => parse_bitfield(buf),
-            MSG_CODE_REQUEST => parse_request(buf),
-            MSG_CODE_PIECE => parse_piece(buf),
-            MSG_CODE_CANCEL => parse_cancel(buf),
+            MSG_CODE_HAVE => parse_have(msg_buf),
+            MSG_CODE_BITFIELD => parse_bitfield(msg_buf),
+            MSG_CODE_REQUEST => parse_request(msg_buf),
+            MSG_CODE_PIECE => parse_piece(msg_buf),
+            MSG_CODE_CANCEL => parse_cancel(msg_buf),
             _ => Err(BitterMistake::new("unknown packet type")),
         }
     }
@@ -135,8 +137,8 @@ fn serialize_handshake(handshake: &Handshake) -> Bytes {
     buf.put_u8(BITTORRENT_PROTO_LEN as u8);
     buf.put_slice(BITTORRENT_PROTO);
     buf.put_bytes(0, RESERVED_LEN);
-    buf.put_slice(*peer_id);
     buf.put_slice(*info_hash);
+    buf.put_slice(*peer_id);
 
     buf.freeze()
 }
@@ -192,7 +194,7 @@ fn serialize_cancel(index: u32, begin: u32, piece: u32) -> Bytes {
     buf.freeze()
 }
 
-#[derive(PartialEq)]
+#[derive(Eq, PartialEq, Debug)]
 pub enum Handshake<'a> {
     Bittorrent(&'a Hash, &'a PeerId),
     Other,
@@ -271,12 +273,11 @@ where
         let msg_len = u32::from_be_bytes(self.buf[..MSG_LEN_LEN].try_into().unwrap()) as usize;
 
         if msg_len > MAX_PACKET_LEN {
-            return Err(BitterMistake::new("packet too large"));
+            return Err(BitterMistake::new_owned(format!("packet too large: {msg_len} bytes")));
         } else if msg_len == 0 {
             return Ok(Packet::Keepalive);
         }
-        nbytes = 0;
-        while nbytes < msg_len {
+        while nbytes < msg_len + MSG_LEN_LEN {
             nbytes += self
                 .inner
                 .read_buf(&mut self.buf)

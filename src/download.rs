@@ -1,5 +1,6 @@
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
+use tokio::io::{AsyncRead, AsyncWrite};
 use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::sync::Arc;
 use std::{fmt, io::Read, net::SocketAddr, str, time::Duration};
@@ -10,7 +11,7 @@ use ureq;
 
 use crate::accounting::Accounting;
 use crate::metainfo::{Hash, PeerId};
-use crate::peer::{DownloadParams, PeerHandler};
+use crate::peer::{DownloadParams, PeerHandler, run_peer_handler};
 use crate::protocol::{Handshake, Packet, TcpConn};
 use crate::{
     bencoding::{bdecode, BDecode, BencodedValue},
@@ -69,7 +70,6 @@ impl Downloader {
                 .as_bytes()
                 .try_into()
                 .expect("peer_id contains more bytes than expected"),
-            info_hash: metainfo.info.hash,
             metainfo: Arc::new(metainfo.info),
             req_piece_len: self.settings.req_piece_len,
         };
@@ -111,34 +111,6 @@ async fn run_new_peer_conn(
         .map_err(BitterMistake::new_err)?;
 
     run_peer_handler(params, acct, stream).await
-}
-
-async fn run_peer_handler(
-    params: DownloadParams,
-    acct: Accounting,
-    stream: TcpStream,
-) -> BitterResult<()> {
-    let mut conn = TcpConn::new(stream);
-    let mut handler = PeerHandler::new(&params, acct);
-
-    conn.write(&Packet::Handshake(Handshake::Bittorrent(
-        &params.info_hash,
-        &params.peer_id,
-    )))
-    .await?;
-
-    let handshake = conn.read_handshake().await?;
-    match handshake {
-        Handshake::Other => return Err(BitterMistake::new("Handshake failed. Unknown protocol")),
-        Handshake::Bittorrent(peer_hash, peer_id) => {
-            if *peer_hash != params.info_hash {
-                return Err(BitterMistake::new("info_hash mismatch"));
-            }
-            // TODO: ("check peer id")
-        }
-    }
-    handler.run(&mut conn).await?;
-    unimplemented!()
 }
 
 enum AnnounceEvent {

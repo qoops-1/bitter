@@ -17,8 +17,8 @@ impl Accounting {
     pub fn new(total: usize) -> Accounting {
         let mut downloaded = Vec::with_capacity(total);
         let mut reserved = Vec::with_capacity(total);
-        downloaded.fill_with(AtomicBool::default);
-        reserved.fill_with(AtomicBool::default);
+        downloaded.resize_with(total, AtomicBool::default);
+        reserved.resize_with(total, AtomicBool::default);
 
         return Accounting {
             available: Vec::with_capacity(0),

@@ -9,13 +9,13 @@ use download::download;
 use metainfo::{Metainfo, MetainfoFile};
 use utils::{BitterMistake, BitterResult};
 
-mod accounting;
-mod bencoding;
+pub mod accounting;
+pub mod bencoding;
 mod download;
-mod metainfo;
-mod peer;
-mod protocol;
-mod utils;
+pub mod metainfo;
+pub mod peer;
+pub mod protocol;
+pub mod utils;
 
 #[derive(Clone)]
 pub struct Settings {

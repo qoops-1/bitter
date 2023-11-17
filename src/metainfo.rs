@@ -27,7 +27,7 @@ impl BDecode for Metainfo {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MetainfoInfo {
     pub name: String,
     pub piece_length: u32,
@@ -85,7 +85,7 @@ impl BDecode for MetainfoInfo {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MetainfoFile {
     pub length: u32,
     pub path: PathBuf,

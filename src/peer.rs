@@ -11,7 +11,7 @@ use tokio::{
 use crate::{
     accounting::Accounting,
     metainfo::{Hash, MetainfoFile, MetainfoInfo, PeerId},
-    protocol::{Packet, TcpConn},
+    protocol::{Packet, TcpConn, Handshake},
     utils::{roundup_div, BitterMistake, BitterResult},
 };
 
@@ -21,7 +21,6 @@ const MAX_REQUESTS_INFLIGHT: usize = 5;
 #[derive(Clone)]
 pub struct DownloadParams {
     pub peer_id: PeerId,
-    pub info_hash: Hash,
     pub metainfo: Arc<MetainfoInfo>,
     pub req_piece_len: usize,
 }
@@ -215,12 +214,12 @@ where
 
     fn handle_interested(&mut self) {
         self.peer_interested = true;
-        todo!()
+        // todo!()
     }
 
     fn handle_not_interested(&mut self) {
         self.peer_interested = false;
-        todo!()
+        // todo!()
     }
 
     async fn handle_have(&mut self, index: u32, conn: &mut TcpConn<T>) -> BitterResult<()> {
@@ -479,6 +478,34 @@ fn identify_files(
 struct FileMapping<'a> {
     offset: u32,
     files: Vec<(&'a Path, usize)>,
+}
+
+pub async fn run_peer_handler<T: Unpin + AsyncRead + AsyncWrite>(
+    params: DownloadParams,
+    acct: Accounting,
+    stream: T,
+) -> BitterResult<()> {
+    let mut conn = TcpConn::new(stream);
+    let mut handler = PeerHandler::new(&params, acct);
+
+    conn.write(&Packet::Handshake(Handshake::Bittorrent(
+        &params.metainfo.hash,
+        &params.peer_id,
+    )))
+    .await?;
+
+    let handshake = conn.read_handshake().await?;
+    match handshake {
+        Handshake::Other => return Err(BitterMistake::new("Handshake failed. Unknown protocol")),
+        Handshake::Bittorrent(peer_hash, peer_id) => {
+            if *peer_hash != params.metainfo.hash {
+                return Err(BitterMistake::new("info_hash mismatch"));
+            }
+            // TODO: ("check peer id")
+        }
+    }
+    handler.run(&mut conn).await?;
+    Ok(())
 }
 
 #[cfg(test)]
