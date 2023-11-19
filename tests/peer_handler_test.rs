@@ -4,7 +4,7 @@ use bitter::{
     bencoding::bdecode,
     metainfo::{Metainfo, PeerId},
     peer::{run_peer_handler, DownloadParams},
-    protocol::{Handshake, Packet, TcpConn},
+    protocol::{Handshake, Packet, TcpConn, DEFAULT_BUF_SIZE},
 };
 use bytes::Bytes;
 use std::{collections::HashSet, fs, sync::Arc};
@@ -36,16 +36,16 @@ async fn basic() {
         run_peer_handler(params, acct, socket2).await.unwrap();
     });
 
-    let mut conn = TcpConn::new(socket1);
+    let mut conn = TcpConn::new(socket1, DEFAULT_BUF_SIZE);
     conn.write(&Packet::Handshake(Handshake::Bittorrent(
-        &metainfo.info.hash,
-        &my_peer_id,
+        metainfo.info.hash,
+        my_peer_id,
     )))
     .await
     .unwrap();
     assert_eq!(
         conn.read_handshake().await.unwrap(),
-        Handshake::Bittorrent(&metainfo.info.hash, &PeerId::default())
+        Handshake::Bittorrent(metainfo.info.hash, PeerId::default())
     );
 
     let bfield = Packet::Bitfield(BitVec::from_elem(metainfo.info.pieces.len(), true));
@@ -57,6 +57,8 @@ async fn basic() {
     conn.write(&Packet::Unchoke).await.unwrap();
     let mut pieces_received = 0;
     let mut pending_pieces: HashSet<u32> = HashSet::new();
+
+    todo!("fails after this point");
 
     while pieces_received < metainfo.info.pieces.len() {
         let packet = conn.read().await.unwrap();

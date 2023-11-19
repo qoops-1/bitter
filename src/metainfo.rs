@@ -6,8 +6,10 @@ use sha1::{Digest, Sha1};
 use crate::bencoding::*;
 use crate::utils::{BitterMistake, BitterResult};
 
-pub type Hash = [u8; 20];
-pub type PeerId = [u8; 20];
+pub const BITTORRENT_HASH_LEN: usize = 20;
+pub const BITTORRENT_PEERID_LEN: usize = 20;
+pub type Hash = [u8; BITTORRENT_HASH_LEN];
+pub type PeerId = [u8; BITTORRENT_PEERID_LEN];
 #[derive(Debug)]
 pub struct Metainfo {
     pub announce: String,

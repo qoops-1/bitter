@@ -11,7 +11,7 @@ use tokio::{
 use crate::{
     accounting::Accounting,
     metainfo::{Hash, MetainfoFile, MetainfoInfo, PeerId},
-    protocol::{Handshake, Packet, TcpConn},
+    protocol::{Handshake, Packet, TcpConn, DEFAULT_BUF_SIZE},
     utils::{roundup_div, BitterMistake, BitterResult},
 };
 
@@ -488,12 +488,12 @@ pub async fn run_peer_handler<T: Unpin + AsyncRead + AsyncWrite>(
     acct: Accounting,
     stream: T,
 ) -> BitterResult<()> {
-    let mut conn = TcpConn::new(stream);
+    let mut conn = TcpConn::new(stream, DEFAULT_BUF_SIZE);
     let mut handler = PeerHandler::new(&params, acct);
 
     conn.write(&Packet::Handshake(Handshake::Bittorrent(
-        &params.metainfo.hash,
-        &params.peer_id,
+        params.metainfo.hash,
+        params.peer_id,
     )))
     .await?;
 
@@ -501,7 +501,7 @@ pub async fn run_peer_handler<T: Unpin + AsyncRead + AsyncWrite>(
     match handshake {
         Handshake::Other => return Err(BitterMistake::new("Handshake failed. Unknown protocol")),
         Handshake::Bittorrent(peer_hash, peer_id) => {
-            if *peer_hash != params.metainfo.hash {
+            if peer_hash != params.metainfo.hash {
                 return Err(BitterMistake::new("info_hash mismatch"));
             }
             // TODO: ("check peer id")

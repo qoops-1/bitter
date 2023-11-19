@@ -1,5 +1,5 @@
 use crate::{
-    metainfo::{Hash, PeerId},
+    metainfo::{Hash, PeerId, BITTORRENT_HASH_LEN, BITTORRENT_PEERID_LEN},
     utils::BitterMistake,
 };
 use bit_vec::BitVec;
@@ -11,7 +11,7 @@ use crate::utils::BitterResult;
 
 // Common constants
 const MAX_PACKET_LEN: usize = 1024 * 1024 * 8;
-const BUF_SIZE: usize = MAX_PACKET_LEN as usize;
+pub const DEFAULT_BUF_SIZE: usize = MAX_PACKET_LEN as usize;
 const MSG_LEN_LEN: usize = 4;
 const INCORRECT_LEN_ERROR: &str = "Packet has incorrect size";
 // Handshake msg constants
@@ -40,7 +40,7 @@ const MSG_CODE_PIECE: u8 = 7;
 const MSG_CODE_CANCEL: u8 = 8;
 
 #[derive(PartialEq, Eq, Debug, Clone)]
-pub enum Packet<'a> {
+pub enum Packet {
     Choke,
     Unchoke,
     Interested,
@@ -50,13 +50,13 @@ pub enum Packet<'a> {
     Request { index: u32, begin: u32, length: u32 },
     Piece { index: u32, begin: u32, data: Bytes },
     Cancel { index: u32, begin: u32, length: u32 },
-    Handshake(Handshake<'a>),
+    Handshake(Handshake),
     Keepalive,
 }
 
 static KEEPALIVE_BYTES: &[u8] = (0 as u32).to_be_bytes().as_slice();
 
-impl<'a> Packet<'a> {
+impl Packet {
     pub fn parse(mut buf: Bytes) -> BitterResult<Self> {
         let msg_type = buf.get_u8();
 
@@ -127,8 +127,8 @@ fn serialize_handshake(handshake: &Handshake) -> Bytes {
     buf.put_u8(BITTORRENT_PROTO_LEN as u8);
     buf.put_slice(BITTORRENT_PROTO);
     buf.put_bytes(0, RESERVED_LEN);
-    buf.put_slice(*info_hash);
-    buf.put_slice(*peer_id);
+    buf.put_slice(info_hash);
+    buf.put_slice(peer_id);
 
     buf.freeze()
 }
@@ -185,8 +185,8 @@ fn serialize_cancel(index: u32, begin: u32, piece: u32) -> Bytes {
 }
 
 #[derive(Eq, PartialEq, Debug, Clone)]
-pub enum Handshake<'a> {
-    Bittorrent(&'a Hash, &'a PeerId),
+pub enum Handshake {
+    Bittorrent(Hash, PeerId),
     Other,
 }
 
@@ -202,8 +202,8 @@ impl<T> TcpConn<T>
 where
     T: Sized + Unpin + AsyncRead + AsyncWrite,
 {
-    pub fn new(stream: T) -> TcpConn<T> {
-        let buf = BytesMut::with_capacity(BUF_SIZE);
+    pub fn new(stream: T, buf_size: usize) -> TcpConn<T> {
+        let buf = BytesMut::with_capacity(buf_size);
         return TcpConn { buf, inner: stream };
     }
 
@@ -222,9 +222,7 @@ where
                 .map_err(BitterMistake::new_err)?;
         }
 
-        let slice = &self.buf[ptr..ptr + MSG_LEN_BITTORRENT_HANDSHAKE];
-
-        let len = slice[0];
+        let len = self.buf.get_u8();
         ptr = 1;
 
         if len != BITTORRENT_PROTO_LEN as u8 {
@@ -233,17 +231,25 @@ where
             ));
         }
 
-        let proto_name = &slice[ptr..ptr + BITTORRENT_PROTO_LEN];
-        ptr += BITTORRENT_PROTO_LEN;
-        if proto_name != BITTORRENT_PROTO {
+        let proto_name = self.buf.split_to(BITTORRENT_PROTO_LEN);
+        if &proto_name != BITTORRENT_PROTO {
             return Err(BitterMistake::new("unknown protocol"));
         }
 
-        let _reserved = &slice[ptr..ptr + RESERVED_LEN];
-        ptr += RESERVED_LEN;
-        let info_hash: &Hash = slice[ptr..ptr + size_of::<Hash>()].try_into().unwrap();
-        ptr += size_of::<Hash>();
-        let peer_id: &PeerId = slice[ptr..ptr + size_of::<PeerId>()].try_into().unwrap();
+        let _reserved = self.buf.split_to(RESERVED_LEN);
+
+        let info_hash: Hash = self
+            .buf
+            .split_to(BITTORRENT_HASH_LEN)
+            .as_ref()
+            .try_into()
+            .unwrap();
+        let peer_id: PeerId = self
+            .buf
+            .split_to(BITTORRENT_PEERID_LEN)
+            .as_ref()
+            .try_into()
+            .unwrap();
 
         Ok(Handshake::Bittorrent(info_hash, peer_id))
     }
@@ -278,7 +284,7 @@ where
         Packet::parse(self.buf.split_to(msg_len).freeze())
     }
 
-    pub async fn write<'a>(&mut self, packet: &Packet<'a>) -> BitterResult<()> {
+    pub async fn write<'a>(&mut self, packet: &Packet) -> BitterResult<()> {
         let mut buf = packet.serialize();
         while buf.has_remaining() {
             self.inner
@@ -294,7 +300,7 @@ where
     }
 }
 
-fn parse_have<'a>(mut buf: Bytes) -> BitterResult<Packet<'a>> {
+fn parse_have<'a>(mut buf: Bytes) -> BitterResult<Packet> {
     if buf.remaining() != 4 {
         return Err(BitterMistake::new(INCORRECT_LEN_ERROR));
     }
@@ -302,11 +308,11 @@ fn parse_have<'a>(mut buf: Bytes) -> BitterResult<Packet<'a>> {
     Ok(Packet::Have(pieceno))
 }
 
-fn parse_bitfield<'a>(buf: Bytes) -> BitterResult<Packet<'a>> {
+fn parse_bitfield<'a>(buf: Bytes) -> BitterResult<Packet> {
     Ok(Packet::Bitfield(BitVec::from_bytes(&buf)))
 }
 
-fn parse_request<'a>(buf: Bytes) -> BitterResult<Packet<'a>> {
+fn parse_request<'a>(buf: Bytes) -> BitterResult<Packet> {
     parse_request_internal(buf).map(|(index, begin, length)| Packet::Request {
         index,
         begin,
@@ -314,7 +320,7 @@ fn parse_request<'a>(buf: Bytes) -> BitterResult<Packet<'a>> {
     })
 }
 
-fn parse_piece<'a>(mut buf: Bytes) -> BitterResult<Packet<'a>> {
+fn parse_piece<'a>(mut buf: Bytes) -> BitterResult<Packet> {
     if buf.remaining() < MSG_MIN_LEN_PIECE - MSG_TYPE_LEN {
         return Err(BitterMistake::new(INCORRECT_LEN_ERROR));
     }
@@ -328,7 +334,7 @@ fn parse_piece<'a>(mut buf: Bytes) -> BitterResult<Packet<'a>> {
     })
 }
 
-fn parse_cancel<'a>(buf: Bytes) -> BitterResult<Packet<'a>> {
+fn parse_cancel<'a>(buf: Bytes) -> BitterResult<Packet> {
     parse_request_internal(buf).map(|(index, begin, length)| Packet::Cancel {
         index,
         begin,
@@ -354,16 +360,37 @@ mod tests {
     use bytes::Bytes;
     use tokio::io::duplex;
 
-    use super::{TcpConn, Packet};
+    use crate::metainfo::Hash;
+    use crate::peer;
+    use crate::protocol::{Handshake, DEFAULT_BUF_SIZE, MAX_PACKET_LEN};
+
+    use super::{Packet, TcpConn};
 
     #[test]
     fn test_ser_de() {
         let have_packet = Packet::Have(29);
         let bitfield_packet = Packet::Bitfield(BitVec::from_bytes(&[9, 8, 128, 0, 1]));
-        let request_packet = Packet::Request { index: 111, begin: 256, length: 512 };
-        let cancel_packet = Packet::Cancel { index: 112, begin: 512, length: 256 };
+        let request_packet = Packet::Request {
+            index: 111,
+            begin: 256,
+            length: 512,
+        };
+        let cancel_packet = Packet::Cancel {
+            index: 112,
+            begin: 512,
+            length: 256,
+        };
         // Piece packet is tested in piece_sending test
-        for sent_packet in vec![Packet::Unchoke, Packet::Choke, Packet::Interested, Packet::NotInterested, have_packet, bitfield_packet, request_packet, cancel_packet] {    
+        for sent_packet in vec![
+            Packet::Unchoke,
+            Packet::Choke,
+            Packet::Interested,
+            Packet::NotInterested,
+            have_packet,
+            bitfield_packet,
+            request_packet,
+            cancel_packet,
+        ] {
             let recv_packet = Packet::parse(sent_packet.serialize().split_off(4)).unwrap();
 
             assert_eq!(sent_packet, recv_packet);
@@ -371,12 +398,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handshake_sending() {
+        let (input, output) = duplex(usize::pow(2, 10));
+        let mut inconn = TcpConn::new(input, DEFAULT_BUF_SIZE);
+        let mut outconn = TcpConn::new(output, DEFAULT_BUF_SIZE);
+        let hash: Hash = [7; 20];
+        let peer_id = [3; 20];
+        let sent_packet = Handshake::Bittorrent(hash, peer_id);
+
+        inconn
+            .write(&Packet::Handshake(sent_packet.clone()))
+            .await
+            .unwrap();
+
+        let recv_packet = outconn.read_handshake().await.unwrap();
+
+        assert_eq!(sent_packet, recv_packet);
+    }
+
+    #[tokio::test]
     async fn test_piece_sending() {
         let (input, output) = duplex(usize::pow(2, 10));
-        let piece = Bytes::copy_from_slice(&[0,1,2,3]);
-        let mut inconn = TcpConn::new(input);
-        let mut outconn = TcpConn::new(output);
-        let sent_packet = Packet::Piece {index: 0, begin: 10, data: piece.clone()};
+        let piece = Bytes::copy_from_slice(&[0, 1, 2, 3]);
+        let mut inconn = TcpConn::new(input, DEFAULT_BUF_SIZE);
+        let mut outconn = TcpConn::new(output, DEFAULT_BUF_SIZE);
+        let sent_packet = Packet::Piece {
+            index: 0,
+            begin: 10,
+            data: piece.clone(),
+        };
 
         inconn.write(&sent_packet).await.unwrap();
 
@@ -388,8 +438,8 @@ mod tests {
     #[tokio::test]
     async fn test_keepalive_sending() {
         let (input, output) = duplex(usize::pow(2, 10));
-        let mut inconn = TcpConn::new(input);
-        let mut outconn = TcpConn::new(output);
+        let mut inconn = TcpConn::new(input, DEFAULT_BUF_SIZE);
+        let mut outconn = TcpConn::new(output, DEFAULT_BUF_SIZE);
         let sent_packet = Packet::Keepalive;
 
         inconn.write(&sent_packet).await.unwrap();
@@ -399,13 +449,33 @@ mod tests {
         assert_eq!(sent_packet, recv_packet);
     }
 
-    
+    #[tokio::test]
+    async fn test_handshake_and_packet() {
+        let (input, output) = duplex(usize::pow(2, 10));
+        let mut inconn = TcpConn::new(input, DEFAULT_BUF_SIZE);
+        let mut outconn = TcpConn::new(output, DEFAULT_BUF_SIZE);
+        let hash: Hash = [7; 20];
+        let peer_id = [3; 20];
+
+        let sent_packet = Handshake::Bittorrent(hash, peer_id);
+        inconn
+            .write(&Packet::Handshake(sent_packet.clone()))
+            .await
+            .unwrap();
+        let recv_packet = outconn.read_handshake().await.unwrap();
+        assert_eq!(sent_packet, recv_packet);
+
+        let sent_packet = Packet::Keepalive;
+        inconn.write(&sent_packet).await.unwrap();
+        let recv_packet = outconn.read().await.unwrap();
+        assert_eq!(sent_packet, recv_packet);
+    }
 
     #[tokio::test]
     async fn test_multiple_packets() {
         let (input, output) = duplex(usize::pow(2, 10));
-        let mut inconn = TcpConn::new(input);
-        let mut outconn = TcpConn::new(output);
+        let mut inconn = TcpConn::new(input, DEFAULT_BUF_SIZE);
+        let mut outconn = TcpConn::new(output, DEFAULT_BUF_SIZE);
 
         inconn.write(&Packet::Interested).await.unwrap();
         inconn.write(&Packet::NotInterested).await.unwrap();
@@ -415,5 +485,75 @@ mod tests {
 
         let packet2 = outconn.read().await.unwrap().to_owned();
         assert!(matches!(packet2, Packet::NotInterested));
+    }
+
+    #[tokio::test]
+    async fn test_recv_buffer_override() {
+        let (input, output) = duplex(usize::pow(2, 10));
+        let mut inconn = TcpConn::new(input, 92);
+        let mut outconn = TcpConn::new(output, 92);
+        let piece1 = Packet::Piece {
+            index: 0,
+            begin: 0,
+            data: Bytes::from(vec![1; 64]),
+        };
+        let piece2 = Packet::Piece {
+            index: 0,
+            begin: 64,
+            data: Bytes::from(vec![2; 64]),
+        };
+
+        inconn.write(&piece1).await.unwrap();
+        inconn.write(&piece2).await.unwrap();
+
+        let recv_piece1 = outconn.read().await.unwrap();
+        assert_eq!(piece1, recv_piece1);
+
+        let recv_piece2 = outconn.read().await.unwrap();
+        assert_eq!(piece2, recv_piece2);
+    }
+
+    #[tokio::test]
+    async fn test_recv_buffer_overlap() {
+        let (input, output) = duplex(usize::pow(2, 10));
+        let mut inconn = TcpConn::new(input, 80);
+        let mut outconn = TcpConn::new(output, 80);
+        let piece1 = Packet::Piece {
+            index: 0,
+            begin: 0,
+            data: Bytes::from(vec![1; 64]),
+        };
+        let piece2 = Packet::Piece {
+            index: 0,
+            begin: 64,
+            data: Bytes::from(vec![2; 64]),
+        };
+
+        inconn.write(&piece1).await.unwrap();
+
+        let recv_piece1 = outconn.read().await.unwrap();
+        assert_eq!(piece1, recv_piece1);
+
+        inconn.write(&piece2).await.unwrap();
+
+        let recv_piece2 = outconn.read().await.unwrap();
+        assert_eq!(piece2, recv_piece2);
+    }
+
+    #[tokio::test]
+    async fn test_packet_too_large() {
+        let (input, output) = duplex(MAX_PACKET_LEN * 2);
+        let mut inconn = TcpConn::new(input, 32);
+        let mut outconn = TcpConn::new(output, 32);
+        let piece1 = Packet::Piece {
+            index: 0,
+            begin: 0,
+            data: Bytes::from(vec![1; MAX_PACKET_LEN]),
+        };
+
+        inconn.write(&piece1).await.unwrap();
+
+        let res = outconn.read().await;
+        assert!(res.is_err());
     }
 }
