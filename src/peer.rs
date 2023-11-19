@@ -1,7 +1,7 @@
 use std::{io::SeekFrom, marker::PhantomData, path::Path, sync::Arc};
 
 use bit_vec::BitVec;
-use bytes::{Bytes, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 use sha1::{Digest, Sha1};
 use tokio::{
     fs::OpenOptions,
@@ -11,7 +11,7 @@ use tokio::{
 use crate::{
     accounting::Accounting,
     metainfo::{Hash, MetainfoFile, MetainfoInfo, PeerId},
-    protocol::{Packet, TcpConn, Handshake},
+    protocol::{Handshake, Packet, TcpConn},
     utils::{roundup_div, BitterMistake, BitterResult},
 };
 
@@ -23,6 +23,7 @@ pub struct DownloadParams {
     pub peer_id: PeerId,
     pub metainfo: Arc<MetainfoInfo>,
     pub req_piece_len: usize,
+    pub last_chunk_size: u32,
 }
 
 pub struct PeerHandler<'a, T> {
@@ -52,10 +53,10 @@ struct PieceInProgress {
 enum ChunkStatus {
     Missing,
     Downloading,
-    Present(Vec<u8>),
+    Present(Bytes),
 }
 
-type PieceStatus = Option<Vec<Vec<u8>>>;
+type PieceStatus = Option<Vec<Bytes>>;
 
 impl ProgressTracker {
     fn download_started(&mut self, index: u32, begin: u32) {
@@ -80,7 +81,7 @@ impl ProgressTracker {
         &mut self,
         index: u32,
         begin: u32,
-        data: &'b [u8],
+        data: Bytes,
     ) -> BitterResult<PieceStatus> {
         let chunk_len = self.chunk_len;
         let chunk_no = begin as usize / chunk_len;
@@ -98,7 +99,7 @@ impl ProgressTracker {
                     "Piece {index}+{begin} is already received"
                 )))
             }
-            _ => self.pcs[piece_pos].chunks[chunk_no] = ChunkStatus::Present(data.to_owned()),
+            _ => self.pcs[piece_pos].chunks[chunk_no] = ChunkStatus::Present(data),
         };
         if self.pcs[piece_pos]
             .chunks
@@ -109,7 +110,7 @@ impl ProgressTracker {
             return Ok(None);
         }
 
-        let full_piece: Vec<Vec<u8>> = self
+        let full_piece: Vec<Bytes> = self
             .pcs
             .remove(piece_pos)
             .chunks
@@ -171,6 +172,7 @@ where
         loop {
             let packet = conn.read().await?;
             let mut needs_request = false;
+            println!("received packet {:?}", packet);
 
             match packet {
                 Packet::Choke => self.handle_choke(),
@@ -262,17 +264,12 @@ where
         conn.write(&Packet::Piece {
             index: piece_no,
             begin: chunk_offset,
-            data: &chunk,
+            data: chunk,
         })
         .await
     }
 
-    async fn handle_piece<'b>(
-        &mut self,
-        index: u32,
-        begin: u32,
-        data: &'b [u8],
-    ) -> BitterResult<()> {
+    async fn handle_piece(&mut self, index: u32, begin: u32, data: Bytes) -> BitterResult<()> {
         self.verify_piece(index, begin, data.len() as u32)?;
 
         if let Some(full_piece) = self.ptracker.complete_chunk(index, begin, data)? {
@@ -294,7 +291,7 @@ where
         // Nothing to do right now, we're processing requests as they come and must've already sent the piece
     }
 
-    fn verify_hash(&self, index: u32, chunks: &Vec<Vec<u8>>) -> BitterResult<()> {
+    fn verify_hash(&self, index: u32, chunks: &Vec<Bytes>) -> BitterResult<()> {
         let mut digest_state = Sha1::new();
         for chunk in chunks {
             digest_state.update(chunk);
@@ -343,10 +340,16 @@ where
         };
 
         self.ptracker.download_started(index, begin);
+        let mut length = self.params.req_piece_len as u32;
+        if index == self.params.metainfo.pieces.len() as u32
+            && self.params.metainfo.piece_length == begin + self.params.req_piece_len as u32
+        {
+            length = self.params.last_chunk_size;
+        }
         conn.write(&Packet::Request {
             index,
             begin,
-            length: self.params.req_piece_len as u32,
+            length,
         })
         .await
     }
@@ -396,7 +399,7 @@ async fn read_chunk(
 async fn save_piece(
     index: u32,
     piece_len: usize,
-    chunks: &Vec<Vec<u8>>,
+    chunks: &Vec<Bytes>,
     files: &Vec<MetainfoFile>,
 ) -> BitterResult<()> {
     let mut fm = identify_files(index, 0, piece_len, files);
@@ -512,6 +515,7 @@ pub async fn run_peer_handler<T: Unpin + AsyncRead + AsyncWrite>(
 mod tests {
     use std::path::PathBuf;
 
+    use bytes::{Buf, Bytes, BytesMut};
     use tempdir::TempDir;
     use tokio::{fs::File, io::AsyncReadExt};
 
@@ -645,7 +649,7 @@ mod tests {
             length: u32::MAX,
             path: file.clone(),
         }];
-        save_piece(0, plen, &vec![ones_piece.clone()], &files)
+        save_piece(0, plen, &vec![Bytes::from(ones_piece.clone())], &files)
             .await
             .unwrap();
         let mut written_file = File::open(&file).await.unwrap();
@@ -659,7 +663,7 @@ mod tests {
             "file should be the same as the submitted piece"
         );
 
-        save_piece(1, plen, &vec![h_piece.clone()], &files)
+        save_piece(1, plen, &vec![Bytes::from(h_piece.clone())], &files)
             .await
             .unwrap();
 
@@ -696,9 +700,9 @@ mod tests {
             0,
             plen,
             &vec![
-                ones_piece1.to_vec(),
-                ones_piece2.to_vec(),
-                ones_piece3.to_vec(),
+                Bytes::copy_from_slice(ones_piece1.clone()),
+                Bytes::copy_from_slice(ones_piece2.clone()),
+                Bytes::copy_from_slice(ones_piece3.clone()),
             ],
             &files,
         )
@@ -749,7 +753,7 @@ mod tests {
         let mut received = ones.clone();
         received.append(&mut twos.clone());
         received.append(&mut threes.clone());
-        save_piece(0, plen, &vec![received.clone()], &files)
+        save_piece(0, plen, &vec![Bytes::from(received)], &files)
             .await
             .unwrap();
         let mut written_file1 = File::open(&file1).await.unwrap();
@@ -816,7 +820,11 @@ mod tests {
         save_piece(
             0,
             plen,
-            &vec![chunk1.clone(), chunk2.clone(), chunk3.clone()],
+            &vec![
+                Bytes::from(chunk1),
+                Bytes::from(chunk2),
+                Bytes::from(chunk3),
+            ],
             &files,
         )
         .await

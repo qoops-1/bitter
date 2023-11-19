@@ -39,7 +39,7 @@ const MSG_CODE_REQUEST: u8 = 6;
 const MSG_CODE_PIECE: u8 = 7;
 const MSG_CODE_CANCEL: u8 = 8;
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub enum Packet<'a> {
     Choke,
     Unchoke,
@@ -47,40 +47,29 @@ pub enum Packet<'a> {
     NotInterested,
     Have(u32),
     Bitfield(BitVec),
-    Request {
-        index: u32,
-        begin: u32,
-        length: u32,
-    },
-    Piece {
-        index: u32,
-        begin: u32,
-        data: &'a [u8],
-    },
-    Cancel {
-        index: u32,
-        begin: u32,
-        length: u32,
-    },
+    Request { index: u32, begin: u32, length: u32 },
+    Piece { index: u32, begin: u32, data: Bytes },
+    Cancel { index: u32, begin: u32, length: u32 },
     Handshake(Handshake<'a>),
     Keepalive,
 }
 
+static KEEPALIVE_BYTES: &[u8] = (0 as u32).to_be_bytes().as_slice();
+
 impl<'a> Packet<'a> {
-    pub fn parse(buf: &'a [u8]) -> BitterResult<Self> {
-        let msg_type = buf[0];
-        let msg_buf = &buf[1..];
+    pub fn parse(mut buf: Bytes) -> BitterResult<Self> {
+        let msg_type = buf.get_u8();
 
         match msg_type {
             MSG_CODE_CHOKE => Ok(Packet::Choke),
             MSG_CODE_UNCHOKE => Ok(Packet::Unchoke),
             MSG_CODE_INTERESTED => Ok(Packet::Interested),
             MSG_CODE_NOT_INTERESTED => Ok(Packet::NotInterested),
-            MSG_CODE_HAVE => parse_have(msg_buf),
-            MSG_CODE_BITFIELD => parse_bitfield(msg_buf),
-            MSG_CODE_REQUEST => parse_request(msg_buf),
-            MSG_CODE_PIECE => parse_piece(msg_buf),
-            MSG_CODE_CANCEL => parse_cancel(msg_buf),
+            MSG_CODE_HAVE => parse_have(buf),
+            MSG_CODE_BITFIELD => parse_bitfield(buf),
+            MSG_CODE_REQUEST => parse_request(buf),
+            MSG_CODE_PIECE => parse_piece(buf),
+            MSG_CODE_CANCEL => parse_cancel(buf),
             _ => Err(BitterMistake::new("unknown packet type")),
         }
     }
@@ -105,7 +94,7 @@ impl<'a> Packet<'a> {
                 begin,
                 length,
             } => serialize_cancel(*index, *begin, *length),
-            _ => unimplemented!(),
+            Packet::Keepalive => Bytes::from_static(KEEPALIVE_BYTES),
         }
     }
 }
@@ -120,10 +109,11 @@ fn buf_with_len(len: usize) -> BytesMut {
 }
 
 fn serialize_code_only(msg_code: u8) -> Bytes {
-    let len = 1;
-    let pieces = &[&u32::to_be_bytes(len)[..], &[msg_code]];
+    let len = u32::to_be_bytes(1);
 
-    Bytes::from(pieces.concat())
+    let pieces = vec![len[0], len[1], len[2], len[3], msg_code];
+
+    Bytes::from(pieces)
 }
 
 fn serialize_handshake(handshake: &Handshake) -> Bytes {
@@ -194,7 +184,7 @@ fn serialize_cancel(index: u32, begin: u32, piece: u32) -> Bytes {
     buf.freeze()
 }
 
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Eq, PartialEq, Debug, Clone)]
 pub enum Handshake<'a> {
     Bittorrent(&'a Hash, &'a PeerId),
     Other,
@@ -259,9 +249,7 @@ where
     }
 
     pub async fn read(&mut self) -> BitterResult<Packet> {
-        let mut nbytes = 0;
-
-        self.buf.clear();
+        let mut nbytes = self.buf.remaining();
 
         while nbytes < MSG_LEN_LEN {
             nbytes += self
@@ -270,10 +258,12 @@ where
                 .await
                 .map_err(BitterMistake::new_err)?;
         }
-        let msg_len = u32::from_be_bytes(self.buf[..MSG_LEN_LEN].try_into().unwrap()) as usize;
+        let msg_len = self.buf.get_u32() as usize;
 
         if msg_len > MAX_PACKET_LEN {
-            return Err(BitterMistake::new_owned(format!("packet too large: {msg_len} bytes")));
+            return Err(BitterMistake::new_owned(format!(
+                "packet too large: {msg_len} bytes"
+            )));
         } else if msg_len == 0 {
             return Ok(Packet::Keepalive);
         }
@@ -285,8 +275,9 @@ where
                 .map_err(BitterMistake::new_err)?;
         }
 
-        Packet::parse(&self.buf[MSG_LEN_LEN..MSG_LEN_LEN + msg_len])
+        Packet::parse(self.buf.split_to(msg_len).freeze())
     }
+
     pub async fn write<'a>(&mut self, packet: &Packet<'a>) -> BitterResult<()> {
         let mut buf = packet.serialize();
         while buf.has_remaining() {
@@ -303,19 +294,19 @@ where
     }
 }
 
-fn parse_have(buf: &[u8]) -> BitterResult<Packet> {
-    if buf.len() != 4 {
+fn parse_have<'a>(mut buf: Bytes) -> BitterResult<Packet<'a>> {
+    if buf.remaining() != 4 {
         return Err(BitterMistake::new(INCORRECT_LEN_ERROR));
     }
-    let pieceno = u32::from_be_bytes(buf.try_into().unwrap());
+    let pieceno = buf.get_u32();
     Ok(Packet::Have(pieceno))
 }
 
-fn parse_bitfield(buf: &[u8]) -> BitterResult<Packet> {
-    Ok(Packet::Bitfield(BitVec::from_bytes(buf)))
+fn parse_bitfield<'a>(buf: Bytes) -> BitterResult<Packet<'a>> {
+    Ok(Packet::Bitfield(BitVec::from_bytes(&buf)))
 }
 
-fn parse_request(buf: &[u8]) -> BitterResult<Packet> {
+fn parse_request<'a>(buf: Bytes) -> BitterResult<Packet<'a>> {
     parse_request_internal(buf).map(|(index, begin, length)| Packet::Request {
         index,
         begin,
@@ -323,21 +314,21 @@ fn parse_request(buf: &[u8]) -> BitterResult<Packet> {
     })
 }
 
-fn parse_piece(buf: &[u8]) -> BitterResult<Packet> {
-    if buf.len() < MSG_MIN_LEN_PIECE - MSG_TYPE_LEN {
+fn parse_piece<'a>(mut buf: Bytes) -> BitterResult<Packet<'a>> {
+    if buf.remaining() < MSG_MIN_LEN_PIECE - MSG_TYPE_LEN {
         return Err(BitterMistake::new(INCORRECT_LEN_ERROR));
     }
-    let (index_buf, buf) = buf.split_at(4);
-    let (begin_buf, buf) = buf.split_at(4);
+    let index = buf.get_u32();
+    let begin = buf.get_u32();
 
-    let index = u32::from_be_bytes(index_buf.try_into().unwrap());
-    let begin = u32::from_be_bytes(begin_buf.try_into().unwrap());
-    let data = buf;
-
-    Ok(Packet::Piece { index, begin, data })
+    Ok(Packet::Piece {
+        index,
+        begin,
+        data: buf,
+    })
 }
 
-fn parse_cancel(buf: &[u8]) -> BitterResult<Packet> {
+fn parse_cancel<'a>(buf: Bytes) -> BitterResult<Packet<'a>> {
     parse_request_internal(buf).map(|(index, begin, length)| Packet::Cancel {
         index,
         begin,
@@ -345,18 +336,84 @@ fn parse_cancel(buf: &[u8]) -> BitterResult<Packet> {
     })
 }
 
-fn parse_request_internal(buf: &[u8]) -> BitterResult<(u32, u32, u32)> {
-    if buf.len() != MSG_LEN_REQUEST - MSG_TYPE_LEN {
+fn parse_request_internal(mut buf: Bytes) -> BitterResult<(u32, u32, u32)> {
+    if buf.remaining() != MSG_LEN_REQUEST - MSG_TYPE_LEN {
         return Err(BitterMistake::new(INCORRECT_LEN_ERROR));
     }
 
-    let (index_buf, buf) = buf.split_at(4);
-    let (begin_buf, buf) = buf.split_at(4);
-    let piece_buf = &buf[..4];
-
-    let index = u32::from_be_bytes(index_buf.try_into().unwrap());
-    let begin = u32::from_be_bytes(begin_buf.try_into().unwrap());
-    let piece = u32::from_be_bytes(piece_buf.try_into().unwrap());
+    let index = buf.get_u32();
+    let begin = buf.get_u32();
+    let piece = buf.get_u32();
 
     Ok((index, begin, piece))
+}
+
+#[cfg(test)]
+mod tests {
+    use bit_vec::BitVec;
+    use bytes::Bytes;
+    use tokio::io::duplex;
+
+    use super::{TcpConn, Packet};
+
+    #[test]
+    fn test_ser_de() {
+        let have_packet = Packet::Have(29);
+        let bitfield_packet = Packet::Bitfield(BitVec::from_bytes(&[9, 8, 128, 0, 1]));
+        let request_packet = Packet::Request { index: 111, begin: 256, length: 512 };
+        let cancel_packet = Packet::Cancel { index: 112, begin: 512, length: 256 };
+        // Piece packet is tested in piece_sending test
+        for sent_packet in vec![Packet::Unchoke, Packet::Choke, Packet::Interested, Packet::NotInterested, have_packet, bitfield_packet, request_packet, cancel_packet] {    
+            let recv_packet = Packet::parse(sent_packet.serialize().split_off(4)).unwrap();
+
+            assert_eq!(sent_packet, recv_packet);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_piece_sending() {
+        let (input, output) = duplex(usize::pow(2, 10));
+        let piece = Bytes::copy_from_slice(&[0,1,2,3]);
+        let mut inconn = TcpConn::new(input);
+        let mut outconn = TcpConn::new(output);
+        let sent_packet = Packet::Piece {index: 0, begin: 10, data: piece.clone()};
+
+        inconn.write(&sent_packet).await.unwrap();
+
+        let recv_packet = outconn.read().await.unwrap();
+
+        assert_eq!(sent_packet, recv_packet);
+    }
+
+    #[tokio::test]
+    async fn test_keepalive_sending() {
+        let (input, output) = duplex(usize::pow(2, 10));
+        let mut inconn = TcpConn::new(input);
+        let mut outconn = TcpConn::new(output);
+        let sent_packet = Packet::Keepalive;
+
+        inconn.write(&sent_packet).await.unwrap();
+
+        let recv_packet = outconn.read().await.unwrap();
+
+        assert_eq!(sent_packet, recv_packet);
+    }
+
+    
+
+    #[tokio::test]
+    async fn test_multiple_packets() {
+        let (input, output) = duplex(usize::pow(2, 10));
+        let mut inconn = TcpConn::new(input);
+        let mut outconn = TcpConn::new(output);
+
+        inconn.write(&Packet::Interested).await.unwrap();
+        inconn.write(&Packet::NotInterested).await.unwrap();
+
+        let packet1 = outconn.read().await.unwrap();
+        assert!(matches!(packet1, Packet::Interested));
+
+        let packet2 = outconn.read().await.unwrap().to_owned();
+        assert!(matches!(packet2, Packet::NotInterested));
+    }
 }

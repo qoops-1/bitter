@@ -1,4 +1,10 @@
-use std::{borrow::Cow, error::Error, fmt, str, num, ops::{Add, Sub, Div}};
+use std::{
+    borrow::Cow,
+    error::Error,
+    fmt, num,
+    ops::{Add, Div, Sub},
+    str,
+};
 
 // Kindly stolen from `urlencoding` crate
 pub fn urlencode(mut data: &[u8]) -> String {
@@ -33,8 +39,10 @@ pub fn urlencode(mut data: &[u8]) -> String {
 }
 
 #[inline]
-pub fn roundup_div<T>(a: T, b: T) -> T 
-where T: Add<Output = T> + Sub<Output = T> + Div<Output = T> + From<u8> + Copy {
+pub fn roundup_div<T>(a: T, b: T) -> T
+where
+    T: Add<Output = T> + Sub<Output = T> + Div<Output = T> + From<u8> + Copy,
+{
     let one: T = Into::into(1u8);
     (a + b - one) / b
 }
