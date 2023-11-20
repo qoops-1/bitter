@@ -58,8 +58,6 @@ async fn basic() {
     let mut pieces_received = 0;
     let mut pending_pieces: HashSet<u32> = HashSet::new();
 
-    todo!("fails after this point");
-
     while pieces_received < metainfo.info.pieces.len() {
         let packet = conn.read().await.unwrap();
 

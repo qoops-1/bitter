@@ -44,12 +44,13 @@ struct ProgressTracker {
     piece_len: u32,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 struct PieceInProgress {
     index: u32,
     chunks: Vec<ChunkStatus>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum ChunkStatus {
     Missing,
     Downloading,
@@ -63,10 +64,9 @@ impl ProgressTracker {
         let piece = match self.pcs.iter_mut().find(|p| p.index == index) {
             Some(p) => p,
             None => {
-                let mut chunks =
-                    Vec::with_capacity(roundup_div(self.piece_len, self.chunk_len as u32) as usize);
+                let chunks_per_piece = roundup_div(self.piece_len, self.chunk_len as u32) as usize;
+                let chunks = vec![ChunkStatus::Missing; chunks_per_piece];
 
-                chunks.fill(ChunkStatus::Missing);
                 self.pcs.push(PieceInProgress { index, chunks });
                 self.pcs.last_mut().unwrap()
             }
@@ -227,7 +227,7 @@ where
     async fn handle_have(&mut self, index: u32, conn: &mut TcpConn<T>) -> BitterResult<()> {
         self.acct.mark_available(index as usize);
         if !self.interested && !self.acct.piece_is_reserved(index as usize) {
-            conn.write(&Packet::Interested).await?;
+            self.signal_interested(conn).await?;
         }
         Ok(())
     }
@@ -236,7 +236,7 @@ where
         self.acct.init_available(bv);
         if self.acct.have_next_to_download() {
             assert!(!self.interested);
-            conn.write(&Packet::Interested).await?;
+            self.signal_interested(conn).await?;
         }
         Ok(())
     }
@@ -332,7 +332,7 @@ where
             .next_missing_chunk()
             .or_else(|| self.acct.get_next_to_download().map(|p| (p as u32, 0)));
         let (index, begin) = match next_chunk_opt {
-            Some((pno, cno)) => (pno, cno * self.params.req_piece_len as u32),
+            Some(next_chunk) => next_chunk,
             None => {
                 self.interested = false;
                 return conn.write(&Packet::NotInterested).await;
@@ -359,6 +359,11 @@ where
             self.request_new_piece(conn).await?;
         }
         Ok(())
+    }
+
+    async fn signal_interested(&mut self, conn: &mut TcpConn<T>) -> BitterResult<()> {
+        self.interested = true;
+        conn.write(&Packet::Interested).await
     }
 }
 
@@ -515,13 +520,16 @@ pub async fn run_peer_handler<T: Unpin + AsyncRead + AsyncWrite>(
 mod tests {
     use std::path::PathBuf;
 
-    use bytes::{Buf, Bytes, BytesMut};
+    use bytes::Bytes;
     use tempdir::TempDir;
     use tokio::{fs::File, io::AsyncReadExt};
 
-    use crate::{metainfo::MetainfoFile, peer::save_piece};
+    use crate::{
+        metainfo::MetainfoFile,
+        peer::{save_piece, ChunkStatus, PieceInProgress},
+    };
 
-    use super::{identify_files, FileMapping};
+    use super::{identify_files, FileMapping, ProgressTracker};
 
     #[test]
     fn identify_ftw_whole_file_test() {
@@ -855,5 +863,121 @@ mod tests {
             .unwrap();
 
         assert_eq!(threes, piece_from_file, "third file must contain 3s");
+    }
+
+    #[test]
+    fn first_download_progress_tracking() {
+        let mut ptracker = ProgressTracker {
+            pcs: Vec::new(),
+            chunk_len: 4,
+            piece_len: 8,
+        };
+        ptracker.download_started(0, 0);
+        assert_eq!(ptracker.pcs.len(), 1);
+        assert_eq!(
+            ptracker.pcs[0],
+            PieceInProgress {
+                index: 0,
+                chunks: vec![ChunkStatus::Downloading, ChunkStatus::Missing],
+            }
+        )
+    }
+
+    #[test]
+    fn progress_tracking_piece_lifecycle() {
+        let mut ptracker = ProgressTracker {
+            pcs: Vec::new(),
+            chunk_len: 4,
+            piece_len: 12,
+        };
+        let p1 = Bytes::from(vec![1]);
+        let p2 = Bytes::from(vec![2]);
+        let p3 = Bytes::from(vec![3]);
+        ptracker.download_started(0, 4);
+        ptracker.download_started(0, 8);
+        let p2_status = ptracker.complete_chunk(0, 4, p2.clone()).unwrap();
+        assert_eq!(p2_status, None);
+        let p3_status = ptracker.complete_chunk(0, 8, p3.clone()).unwrap();
+        assert_eq!(p3_status, None);
+        ptracker.download_started(0, 0);
+        let p1_status = ptracker.complete_chunk(0, 0, p1.clone()).unwrap();
+        assert_eq!(p1_status, Some(vec![p1, p2, p3]));
+    }
+
+    #[test]
+    fn progress_tracking_driven_fetching() {
+        let mut ptracker = ProgressTracker {
+            pcs: Vec::new(),
+            chunk_len: 4,
+            piece_len: 8,
+        };
+
+        assert_eq!(ptracker.next_missing_chunk(), None);
+        ptracker.download_started(0, 0);
+        let next_chunk = ptracker.next_missing_chunk();
+        let (index, begin) = next_chunk.unwrap();
+        assert_eq!((index, begin), (0, 4));
+        ptracker.download_started(index, begin);
+        assert_eq!(ptracker.next_missing_chunk(), None);
+
+        ptracker.download_started(1, 4);
+        let next_chunk = ptracker.next_missing_chunk();
+        let (index, begin) = next_chunk.unwrap();
+        assert_eq!((index, begin), (1, 0));
+        ptracker.download_started(index, begin);
+        assert_eq!(ptracker.next_missing_chunk(), None);
+    }
+
+    #[test]
+    fn progress_tracking_complete_pieces_out_of_order() {
+        let mut ptracker = ProgressTracker {
+            pcs: Vec::new(),
+            chunk_len: 4,
+            piece_len: 8,
+        };
+        let p1 = Bytes::from(vec![1]);
+        let p2 = Bytes::from(vec![2]);
+        let p3 = Bytes::from(vec![3]);
+        let p4 = Bytes::from(vec![4]);
+        let p5 = Bytes::from(vec![5]);
+        let p6 = Bytes::from(vec![6]);
+
+        ptracker.download_started(0, 0);
+        ptracker.download_started(1, 0);
+        ptracker.download_started(1, 4);
+        ptracker.download_started(2, 4);
+
+        // Just introduce some chaos by marking one piece as complete
+        assert_eq!(ptracker.complete_chunk(1, 4, p4.clone()).unwrap(), None);
+
+        let mut missing_chunks = vec![(0, 4), (2, 0)];
+        let (index, begin) = ptracker.next_missing_chunk().unwrap();
+        assert!(missing_chunks.contains(&(index, begin)));
+        missing_chunks.retain(|c| c != &(index, begin));
+        ptracker.download_started(index, begin);
+
+        // Complete 2nd piece to introduce more chaos
+        assert_eq!(
+            ptracker.complete_chunk(1, 0, p3.clone()).unwrap(),
+            Some(vec![p3.clone(), p4.clone()])
+        );
+
+        let (index, begin) = ptracker.next_missing_chunk().unwrap();
+        assert!(missing_chunks.contains(&(index, begin)));
+        ptracker.download_started(index, begin);
+
+        // Now, no more chunks can be requested
+        assert_eq!(ptracker.next_missing_chunk(), None);
+
+        assert_eq!(ptracker.complete_chunk(0, 0, p1.clone()).unwrap(), None);
+        assert_eq!(ptracker.complete_chunk(2, 4, p6.clone()).unwrap(), None);
+        assert_eq!(
+            ptracker.complete_chunk(0, 4, p2.clone()).unwrap(),
+            Some(vec![p1.clone(), p2.clone()])
+        );
+        assert_eq!(
+            ptracker.complete_chunk(2, 0, p5.clone()).unwrap(),
+            Some(vec![p5.clone(), p6.clone()])
+        );
     }
 }
