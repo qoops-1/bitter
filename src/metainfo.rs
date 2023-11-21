@@ -1,4 +1,4 @@
-use std::mem::size_of;
+use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 
 use sha1::{Digest, Sha1};
@@ -8,8 +8,60 @@ use crate::utils::{BitterMistake, BitterResult};
 
 pub const BITTORRENT_HASH_LEN: usize = 20;
 pub const BITTORRENT_PEERID_LEN: usize = 20;
-pub type Hash = [u8; BITTORRENT_HASH_LEN];
-pub type PeerId = [u8; BITTORRENT_PEERID_LEN];
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BitterHash(pub [u8; BITTORRENT_HASH_LEN]);
+
+impl Deref for BitterHash {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for BitterHash {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl TryFrom<&[u8]> for BitterHash {
+    type Error = BitterMistake;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        value
+            .try_into()
+            .map(BitterHash)
+            .map_err(BitterMistake::new_err)
+    }
+}
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerId(pub [u8; BITTORRENT_PEERID_LEN]);
+
+impl Deref for PeerId {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for PeerId {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl TryFrom<&[u8]> for PeerId {
+    type Error = BitterMistake;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        value.try_into().map(PeerId).map_err(BitterMistake::new_err)
+    }
+}
+
 #[derive(Debug)]
 pub struct Metainfo {
     pub announce: String,
@@ -33,9 +85,9 @@ impl BDecode for Metainfo {
 pub struct MetainfoInfo {
     pub name: String,
     pub piece_length: u32,
-    pub pieces: Vec<Hash>,
+    pub pieces: Vec<BitterHash>,
     pub files: Vec<MetainfoFile>,
-    pub hash: Hash,
+    pub hash: BitterHash,
 }
 
 impl BDecode for MetainfoInfo {
@@ -47,14 +99,14 @@ impl BDecode for MetainfoInfo {
         let piece_length = dict.get_val("piece length")?.try_into_u32()?.to_owned();
         let pieces_all: Vec<u8> = dict.get_val("pieces")?.try_into_bytestring()?.to_owned();
 
-        if pieces_all.len() % size_of::<Hash>() != 0 {
+        if pieces_all.len() % BITTORRENT_HASH_LEN != 0 {
             return Err(BitterMistake::new_owned(format!(
                 "Incorrect size of \"pieces\" hash: {}",
                 pieces_all.len()
             )));
         }
-        let pieces: Vec<Hash> = pieces_all
-            .chunks_exact(size_of::<Hash>())
+        let pieces: Vec<BitterHash> = pieces_all
+            .chunks_exact(BITTORRENT_HASH_LEN)
             .map(|slc| slc.try_into().expect("hash size mismatch"))
             .collect();
 
@@ -65,7 +117,7 @@ impl BDecode for MetainfoInfo {
                 length: l,
                 path: PathBuf::from(name.clone()),
             });
-        let hash: Hash = Sha1::digest(buf_ptr).into();
+        let hash = BitterHash(Sha1::digest(buf_ptr).into());
 
         let files = match single_file {
             Ok(single_file) => vec![single_file],

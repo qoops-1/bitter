@@ -14,7 +14,7 @@ use tokio::{self, io::duplex};
 
 #[tokio::test]
 async fn download_pieces() {
-    let my_peer_id: PeerId = [1; 20];
+    let my_peer_id = PeerId([1; 20]);
     let metafile = fs::read("./tests/testfiles/art2.jpg.torrent").unwrap();
     let file = fs::read("./tests/testfiles/art2.jpg").unwrap();
     let mut metainfo = bdecode::<Metainfo>(&metafile).unwrap();

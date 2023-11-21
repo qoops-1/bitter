@@ -10,7 +10,7 @@ use tokio::{
 
 use crate::{
     accounting::Accounting,
-    metainfo::{Hash, MetainfoFile, MetainfoInfo, PeerId},
+    metainfo::{BitterHash, MetainfoFile, MetainfoInfo, PeerId},
     protocol::{Handshake, Packet, TcpConn, DEFAULT_BUF_SIZE},
     utils::{roundup_div, BitterMistake, BitterResult},
 };
@@ -337,7 +337,7 @@ where
         for chunk in chunks {
             digest_state.update(chunk);
         }
-        let digest = Hash::from(digest_state.finalize());
+        let digest = BitterHash(digest_state.finalize().into());
         if digest != self.params.metainfo.pieces[index as usize] {
             return Err(BitterMistake::new("Piece hash mismatch"));
         }

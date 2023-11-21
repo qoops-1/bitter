@@ -9,7 +9,7 @@ use tokio::task::JoinSet;
 use ureq;
 
 use crate::accounting::Accounting;
-use crate::metainfo::{Hash, PeerId};
+use crate::metainfo::{BitterHash, PeerId};
 use crate::peer::{run_peer_handler, DownloadParams};
 use crate::{
     bencoding::{bdecode, BDecode, BencodedValue},
@@ -133,7 +133,7 @@ impl fmt::Display for AnnounceEvent {
 }
 
 struct AnnounceRequest<'a> {
-    info_hash: Hash,
+    info_hash: BitterHash,
     peer_id: &'a str,
     port: u16,
     uploaded: u64,

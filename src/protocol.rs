@@ -1,10 +1,9 @@
 use crate::{
-    metainfo::{Hash, PeerId, BITTORRENT_HASH_LEN, BITTORRENT_PEERID_LEN},
+    metainfo::{BitterHash, PeerId, BITTORRENT_HASH_LEN, BITTORRENT_PEERID_LEN},
     utils::BitterMistake,
 };
 use bit_vec::BitVec;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use std::mem::size_of;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::utils::BitterResult;
@@ -22,7 +21,7 @@ const BITTORRENT_PROTO_LEN: usize = 19;
 const RESERVED_LEN: usize = 8;
 const MSG_TYPE_LEN: usize = 1;
 const MSG_LEN_BITTORRENT_HANDSHAKE: usize =
-    1 + BITTORRENT_PROTO_LEN + RESERVED_LEN + size_of::<PeerId>() + size_of::<Hash>();
+    1 + BITTORRENT_PROTO_LEN + RESERVED_LEN + BITTORRENT_PEERID_LEN + BITTORRENT_HASH_LEN;
 const MSG_LEN_HAVE: usize = MSG_TYPE_LEN + 4;
 const MSG_LEN_REQUEST: usize = 12 + MSG_TYPE_LEN;
 const MSG_MIN_LEN_PIECE: usize = 8 + MSG_TYPE_LEN;
@@ -186,7 +185,7 @@ fn serialize_cancel(index: u32, begin: u32, piece: u32) -> Bytes {
 
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub enum Handshake {
-    Bittorrent(Hash, PeerId),
+    Bittorrent(BitterHash, PeerId),
     Other,
 }
 
@@ -236,7 +235,7 @@ where
 
         let _reserved = self.buf.split_to(RESERVED_LEN);
 
-        let info_hash: Hash = self
+        let info_hash: BitterHash = self
             .buf
             .split_to(BITTORRENT_HASH_LEN)
             .as_ref()
@@ -358,7 +357,7 @@ mod tests {
     use bytes::Bytes;
     use tokio::io::duplex;
 
-    use crate::metainfo::Hash;
+    use crate::metainfo::{BitterHash, PeerId};
     use crate::protocol::{Handshake, DEFAULT_BUF_SIZE, MAX_PACKET_LEN};
 
     use super::{Packet, TcpConn};
@@ -399,8 +398,8 @@ mod tests {
         let (input, output) = duplex(usize::pow(2, 10));
         let mut inconn = TcpConn::new(input, DEFAULT_BUF_SIZE);
         let mut outconn = TcpConn::new(output, DEFAULT_BUF_SIZE);
-        let hash: Hash = [7; 20];
-        let peer_id = [3; 20];
+        let hash: BitterHash = BitterHash([7; 20]);
+        let peer_id = PeerId([3; 20]);
         let sent_packet = Handshake::Bittorrent(hash, peer_id);
 
         inconn
@@ -451,8 +450,8 @@ mod tests {
         let (input, output) = duplex(usize::pow(2, 10));
         let mut inconn = TcpConn::new(input, DEFAULT_BUF_SIZE);
         let mut outconn = TcpConn::new(output, DEFAULT_BUF_SIZE);
-        let hash: Hash = [7; 20];
-        let peer_id = [3; 20];
+        let hash: BitterHash = BitterHash([7; 20]);
+        let peer_id = PeerId([3; 20]);
 
         let sent_packet = Handshake::Bittorrent(hash, peer_id);
         inconn
