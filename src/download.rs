@@ -3,7 +3,6 @@ use rand::{thread_rng, Rng};
 use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::sync::Arc;
 use std::{fmt, io::Read, net::SocketAddr, str, time::Duration};
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::task::JoinSet;
@@ -11,8 +10,7 @@ use ureq;
 
 use crate::accounting::Accounting;
 use crate::metainfo::{Hash, PeerId};
-use crate::peer::{run_peer_handler, DownloadParams, PeerHandler};
-use crate::protocol::{Handshake, Packet, TcpConn};
+use crate::peer::{run_peer_handler, DownloadParams};
 use crate::{
     bencoding::{bdecode, BDecode, BencodedValue},
     metainfo::Metainfo,
@@ -64,8 +62,7 @@ impl Downloader {
                 event: AnnounceEvent::Started,
             },
         )?;
-        let last_chunk_size: u32 = metainfo.info.files.iter().map(|f| f.length).sum::<u32>()
-            % self.settings.req_piece_len as u32;
+        let total_len: usize = metainfo.info.files.iter().map(|f| f.length as usize).sum();
 
         let params = DownloadParams {
             peer_id: self
@@ -75,7 +72,7 @@ impl Downloader {
                 .expect("peer_id contains more bytes than expected"),
             metainfo: Arc::new(metainfo.info),
             req_piece_len: self.settings.req_piece_len,
-            last_chunk_size,
+            total_len,
         };
 
         self.peers.extend(announce_resp.peers);

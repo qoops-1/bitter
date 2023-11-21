@@ -142,10 +142,10 @@ fn serialize_have(index: u32) -> Bytes {
 }
 
 fn serialize_bitfield(bits: &BitVec) -> Bytes {
-    let mut buf = buf_with_len(MSG_TYPE_LEN + bits.len());
-
+    let bytearr = bits.to_bytes();
+    let mut buf = buf_with_len(MSG_TYPE_LEN + bytearr.len());
     buf.put_u8(MSG_CODE_BITFIELD);
-    buf.put_slice(&bits.to_bytes());
+    buf.put_slice(&bytearr);
 
     buf.freeze()
 }
@@ -209,7 +209,6 @@ where
 
     pub async fn read_handshake(&mut self) -> BitterResult<Handshake> {
         let mut nbytes = 0;
-        let mut ptr = 0;
 
         if !self.buf.is_empty() {
             panic!("wrong usage of read_handshake");
@@ -223,7 +222,6 @@ where
         }
 
         let len = self.buf.get_u8();
-        ptr = 1;
 
         if len != BITTORRENT_PROTO_LEN as u8 {
             return Err(BitterMistake::new(
@@ -361,7 +359,6 @@ mod tests {
     use tokio::io::duplex;
 
     use crate::metainfo::Hash;
-    use crate::peer;
     use crate::protocol::{Handshake, DEFAULT_BUF_SIZE, MAX_PACKET_LEN};
 
     use super::{Packet, TcpConn};

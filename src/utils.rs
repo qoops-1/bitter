@@ -1,7 +1,7 @@
 use std::{
     borrow::Cow,
     error::Error,
-    fmt, num,
+    fmt,
     ops::{Add, Div, Sub},
     str,
 };

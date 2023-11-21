@@ -63,7 +63,7 @@ impl BDecode for MetainfoInfo {
             .and_then(|v| v.try_into_u32())
             .map(|l| MetainfoFile {
                 length: l,
-                path: PathBuf::new(),
+                path: PathBuf::from(name.clone()),
             });
         let hash: Hash = Sha1::digest(buf_ptr).into();
 

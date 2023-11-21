@@ -5,30 +5,31 @@ use bitter::{
     metainfo::{Metainfo, PeerId},
     peer::{run_peer_handler, DownloadParams},
     protocol::{Handshake, Packet, TcpConn, DEFAULT_BUF_SIZE},
+    utils::roundup_div,
 };
 use bytes::Bytes;
-use std::{collections::HashSet, fs, sync::Arc};
+use std::{fs, sync::Arc};
 use tempdir::TempDir;
 use tokio::{self, io::duplex};
 
 #[tokio::test]
-async fn basic() {
+async fn download_pieces() {
     let my_peer_id: PeerId = [1; 20];
-    let metafile = fs::read("./tests/testfiles/art1.png.torrent").unwrap();
-    let file = fs::read("./tests/testfiles/art1.png").unwrap();
+    let metafile = fs::read("./tests/testfiles/art2.jpg.torrent").unwrap();
+    let file = fs::read("./tests/testfiles/art2.jpg").unwrap();
     let mut metainfo = bdecode::<Metainfo>(&metafile).unwrap();
     let req_piece_len = metainfo.info.piece_length as usize / 4;
     let pieces: Vec<&[u8]> = file.chunks(metainfo.info.piece_length as usize).collect();
     let tempdir = TempDir::new("").unwrap();
-    let last_chunk_size = (pieces.len() % req_piece_len) as u32;
+    let total_len = file.len();
+
+    metainfo.info.files[0].path = tempdir.path().join(&metainfo.info.files[0].path);
     let params = DownloadParams {
         peer_id: PeerId::default(),
         metainfo: Arc::new(metainfo.info.clone()),
         req_piece_len,
-        last_chunk_size,
+        total_len,
     };
-    metainfo.info.files[0].path = tempdir.into_path().join(&mut metainfo.info.files[0].path);
-
     let (socket1, socket2) = duplex(usize::pow(2, 10));
 
     let res = tokio::spawn(async move {
@@ -55,18 +56,11 @@ async fn basic() {
     conn.write(&Packet::Interested).await.unwrap();
 
     conn.write(&Packet::Unchoke).await.unwrap();
-    let mut pieces_received = 0;
-    let mut pending_pieces: HashSet<u32> = HashSet::new();
 
-    while pieces_received < metainfo.info.pieces.len() {
+    for _ in 0..roundup_div(total_len, req_piece_len) {
         let packet = conn.read().await.unwrap();
 
         match packet {
-            Packet::Have(index) => {
-                assert!(pending_pieces.contains(&index));
-                assert!(pending_pieces.remove(&index));
-                pieces_received += 1;
-            }
             Packet::Request {
                 index,
                 begin,
@@ -81,14 +75,14 @@ async fn basic() {
                 })
                 .await
                 .unwrap();
-                pending_pieces.insert(index);
             }
-            _ => panic!("unknown packet!"),
+            p => panic!("unknown packet {:?}", p),
         }
     }
-    assert!(pending_pieces.is_empty());
+
+    assert_eq!(conn.read().await.unwrap(), Packet::NotInterested);
 
     let downloaded_file = fs::read(&metainfo.info.files[0].path).unwrap();
-
     assert_eq!(file, downloaded_file);
+    drop(tempdir);
 }

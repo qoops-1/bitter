@@ -23,7 +23,7 @@ pub struct DownloadParams {
     pub peer_id: PeerId,
     pub metainfo: Arc<MetainfoInfo>,
     pub req_piece_len: usize,
-    pub last_chunk_size: u32,
+    pub total_len: usize,
 }
 
 pub struct PeerHandler<'a, T> {
@@ -42,6 +42,7 @@ struct ProgressTracker {
     pcs: Vec<PieceInProgress>,
     chunk_len: usize,
     piece_len: u32,
+    total_len: usize,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -59,12 +60,46 @@ enum ChunkStatus {
 
 type PieceStatus = Option<Vec<Bytes>>;
 
+pub async fn run_peer_handler<T: Unpin + AsyncRead + AsyncWrite>(
+    params: DownloadParams,
+    acct: Accounting,
+    stream: T,
+) -> BitterResult<()> {
+    let mut conn = TcpConn::new(stream, DEFAULT_BUF_SIZE);
+    let mut handler = PeerHandler::new(&params, acct);
+
+    conn.write(&Packet::Handshake(Handshake::Bittorrent(
+        params.metainfo.hash,
+        params.peer_id,
+    )))
+    .await?;
+
+    let handshake = conn.read_handshake().await?;
+    match handshake {
+        Handshake::Other => return Err(BitterMistake::new("Handshake failed. Unknown protocol")),
+        Handshake::Bittorrent(peer_hash, peer_id) => {
+            if peer_hash != params.metainfo.hash {
+                return Err(BitterMistake::new("info_hash mismatch"));
+            }
+            // TODO: ("check peer id")
+        }
+    }
+    handler.run(&mut conn).await?;
+    Ok(())
+}
+
 impl ProgressTracker {
     fn download_started(&mut self, index: u32, begin: u32) {
         let piece = match self.pcs.iter_mut().find(|p| p.index == index) {
             Some(p) => p,
             None => {
-                let chunks_per_piece = roundup_div(self.piece_len, self.chunk_len as u32) as usize;
+                let chunks_per_piece;
+                if self.piece_len as usize * (index as usize + 1) > self.total_len {
+                    let last_piece_size = self.total_len % self.piece_len as usize;
+                    chunks_per_piece = roundup_div(last_piece_size, self.chunk_len);
+                } else {
+                    chunks_per_piece = roundup_div(self.piece_len, self.chunk_len as u32) as usize;
+                }
                 let chunks = vec![ChunkStatus::Missing; chunks_per_piece];
 
                 self.pcs.push(PieceInProgress { index, chunks });
@@ -144,6 +179,10 @@ impl ProgressTracker {
             }
         }
     }
+
+    fn have_downloads(&self) -> bool {
+        !self.pcs.is_empty()
+    }
 }
 
 impl<'a, T> PeerHandler<'a, T>
@@ -155,6 +194,7 @@ where
             pcs: Vec::new(),
             chunk_len: params.req_piece_len,
             piece_len: params.metainfo.piece_length,
+            total_len: params.total_len,
         };
         PeerHandler {
             acct,
@@ -172,7 +212,6 @@ where
         loop {
             let packet = conn.read().await?;
             let mut needs_request = false;
-            println!("received packet {:?}", packet);
 
             match packet {
                 Packet::Choke => self.handle_choke(),
@@ -257,6 +296,7 @@ where
             piece_no,
             chunk_offset,
             chunk_len,
+            self.params.metainfo.piece_length,
             &self.params.metainfo.files,
         )
         .await?;
@@ -271,13 +311,14 @@ where
 
     async fn handle_piece(&mut self, index: u32, begin: u32, data: Bytes) -> BitterResult<()> {
         self.verify_piece(index, begin, data.len() as u32)?;
+        println!("received piece {}+{}", index, begin);
 
         if let Some(full_piece) = self.ptracker.complete_chunk(index, begin, data)? {
             // TODO: on hash mismatch re-request piece
             self.verify_hash(index, &full_piece)?;
             save_piece(
                 index,
-                self.params.req_piece_len,
+                self.params.metainfo.piece_length,
                 &full_piece,
                 &self.params.metainfo.files,
             )
@@ -287,7 +328,7 @@ where
         Ok(())
     }
 
-    fn handle_cancel(&self, _index: u32, _begin: u32, length: u32) {
+    fn handle_cancel(&self, _index: u32, _begin: u32, _length: u32) {
         // Nothing to do right now, we're processing requests as they come and must've already sent the piece
     }
 
@@ -334,18 +375,16 @@ where
         let (index, begin) = match next_chunk_opt {
             Some(next_chunk) => next_chunk,
             None => {
-                self.interested = false;
-                return conn.write(&Packet::NotInterested).await;
+                if !self.ptracker.have_downloads() {
+                    self.interested = false;
+                    return conn.write(&Packet::NotInterested).await;
+                }
+                return Ok(());
             }
         };
+        let length = self.get_chunk_len(index, begin);
 
         self.ptracker.download_started(index, begin);
-        let mut length = self.params.req_piece_len as u32;
-        if index == self.params.metainfo.pieces.len() as u32
-            && self.params.metainfo.piece_length == begin + self.params.req_piece_len as u32
-        {
-            length = self.params.last_chunk_size;
-        }
         conn.write(&Packet::Request {
             index,
             begin,
@@ -365,15 +404,35 @@ where
         self.interested = true;
         conn.write(&Packet::Interested).await
     }
+
+    fn get_chunk_len(&self, index: u32, begin: u32) -> u32 {
+        let piece_len = self.params.metainfo.piece_length;
+        let total_pieces = self.params.metainfo.pieces.len() as u32;
+        let mut length = self.params.req_piece_len as u32;
+        if begin + self.params.req_piece_len as u32 > piece_len {
+            length = piece_len - begin;
+        }
+        if index == total_pieces - 1 {
+            let potential_total_len =
+                (index as usize * piece_len as usize) + (begin + length) as usize;
+
+            if potential_total_len > self.params.total_len {
+                length -= (potential_total_len - self.params.total_len) as u32;
+            }
+        }
+
+        length
+    }
 }
 
 async fn read_chunk(
     piece_no: u32,
     chunk_offset: u32,
     chunk_len: u32,
+    piece_len: u32,
     files: &Vec<MetainfoFile>,
 ) -> BitterResult<Bytes> {
-    let mut fm = identify_files(piece_no, chunk_offset, chunk_len as usize, files);
+    let mut fm = identify_files(piece_no, chunk_offset, chunk_len, piece_len, files);
     let mut buf = BytesMut::with_capacity(chunk_len as usize);
     for (path, mut len) in fm.files {
         let mut file = OpenOptions::new()
@@ -403,11 +462,12 @@ async fn read_chunk(
 // Doesn't care about sizes of chunks, simply determines the files that need to be written via index and meta piece_len, and writes the chunks there sequentially
 async fn save_piece(
     index: u32,
-    piece_len: usize,
+    piece_len: u32,
     chunks: &Vec<Bytes>,
     files: &Vec<MetainfoFile>,
 ) -> BitterResult<()> {
-    let mut fm = identify_files(index, 0, piece_len, files);
+    let length = chunks.iter().map(|c| c.remaining() as u32).sum();
+    let mut fm = identify_files(index, 0, length, piece_len, files);
     let mut c_no: usize = 0;
     let mut c_offset: usize = 0;
     for (path, mut len) in fm.files {
@@ -447,14 +507,14 @@ async fn save_piece(
 
 fn identify_files(
     index: u32,
-    chunk_offset: u32,
-    piece_len: usize,
+    offset: u32,
+    mut length: u32,
+    piece_len: u32,
     files: &Vec<MetainfoFile>,
 ) -> FileMapping {
     let mut start_found = false;
     let mut bytes_seen = 0;
-    let mut bytes_to_write = piece_len as u32;
-    let chunk_start = index * piece_len as u32 + chunk_offset;
+    let chunk_start = index * piece_len + offset;
     let mut res = FileMapping::default();
     for f in files {
         let mut f_len = f.length;
@@ -470,13 +530,13 @@ fn identify_files(
             continue;
         }
 
-        if bytes_to_write <= f_len {
-            res.files.push((f.path.as_path(), bytes_to_write as usize));
+        if length <= f_len {
+            res.files.push((f.path.as_path(), length as usize));
             break;
         }
 
         res.files.push((f.path.as_path(), f_len as usize));
-        bytes_to_write -= f_len;
+        length -= f_len;
     }
 
     res
@@ -486,34 +546,6 @@ fn identify_files(
 struct FileMapping<'a> {
     offset: u32,
     files: Vec<(&'a Path, usize)>,
-}
-
-pub async fn run_peer_handler<T: Unpin + AsyncRead + AsyncWrite>(
-    params: DownloadParams,
-    acct: Accounting,
-    stream: T,
-) -> BitterResult<()> {
-    let mut conn = TcpConn::new(stream, DEFAULT_BUF_SIZE);
-    let mut handler = PeerHandler::new(&params, acct);
-
-    conn.write(&Packet::Handshake(Handshake::Bittorrent(
-        params.metainfo.hash,
-        params.peer_id,
-    )))
-    .await?;
-
-    let handshake = conn.read_handshake().await?;
-    match handshake {
-        Handshake::Other => return Err(BitterMistake::new("Handshake failed. Unknown protocol")),
-        Handshake::Bittorrent(peer_hash, peer_id) => {
-            if peer_hash != params.metainfo.hash {
-                return Err(BitterMistake::new("info_hash mismatch"));
-            }
-            // TODO: ("check peer id")
-        }
-    }
-    handler.run(&mut conn).await?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -548,14 +580,14 @@ mod tests {
         ];
 
         assert_eq!(
-            identify_files(0, 0, 4, &files),
+            identify_files(0, 0, 4, 4, &files),
             FileMapping {
                 offset: 0,
                 files: vec![(&f1, 4)],
             }
         );
         assert_eq!(
-            identify_files(1, 0, 4, &files),
+            identify_files(1, 0, 4, 4, &files),
             FileMapping {
                 offset: 0,
                 files: vec![(&f2, 4)],
@@ -573,14 +605,14 @@ mod tests {
         }];
 
         assert_eq!(
-            identify_files(1, 0, 4, &files),
+            identify_files(1, 0, 4, 4, &files),
             FileMapping {
                 offset: 4,
                 files: vec![(&f1, 4)],
             }
         );
         assert_eq!(
-            identify_files(2, 0, 4, &files),
+            identify_files(2, 0, 4, 4, &files),
             FileMapping {
                 offset: 8,
                 files: vec![(&f1, 4)],
@@ -605,7 +637,7 @@ mod tests {
         ];
 
         assert_eq!(
-            identify_files(1, 0, 4, &files),
+            identify_files(1, 0, 4, 4, &files),
             FileMapping {
                 offset: 4,
                 files: vec![(&f1, 2), (&f2, 2)],
@@ -635,7 +667,7 @@ mod tests {
         ];
 
         assert_eq!(
-            identify_files(0, 0, 7, &files),
+            identify_files(0, 0, 7, 7, &files),
             FileMapping {
                 offset: 0,
                 files: vec![(&f1, 2), (&f2, 2), (&f3, 3)],
@@ -657,9 +689,14 @@ mod tests {
             length: u32::MAX,
             path: file.clone(),
         }];
-        save_piece(0, plen, &vec![Bytes::from(ones_piece.clone())], &files)
-            .await
-            .unwrap();
+        save_piece(
+            0,
+            plen as u32,
+            &vec![Bytes::from(ones_piece.clone())],
+            &files,
+        )
+        .await
+        .unwrap();
         let mut written_file = File::open(&file).await.unwrap();
         let mut piece_from_file = Vec::with_capacity(plen);
         written_file
@@ -671,7 +708,7 @@ mod tests {
             "file should be the same as the submitted piece"
         );
 
-        save_piece(1, plen, &vec![Bytes::from(h_piece.clone())], &files)
+        save_piece(1, plen as u32, &vec![Bytes::from(h_piece.clone())], &files)
             .await
             .unwrap();
 
@@ -706,7 +743,7 @@ mod tests {
 
         save_piece(
             0,
-            plen,
+            plen as u32,
             &vec![
                 Bytes::copy_from_slice(ones_piece1.clone()),
                 Bytes::copy_from_slice(ones_piece2.clone()),
@@ -761,7 +798,7 @@ mod tests {
         let mut received = ones.clone();
         received.append(&mut twos.clone());
         received.append(&mut threes.clone());
-        save_piece(0, plen, &vec![Bytes::from(received)], &files)
+        save_piece(0, plen as u32, &vec![Bytes::from(received)], &files)
             .await
             .unwrap();
         let mut written_file1 = File::open(&file1).await.unwrap();
@@ -827,7 +864,7 @@ mod tests {
 
         save_piece(
             0,
-            plen,
+            plen as u32,
             &vec![
                 Bytes::from(chunk1),
                 Bytes::from(chunk2),
@@ -871,6 +908,7 @@ mod tests {
             pcs: Vec::new(),
             chunk_len: 4,
             piece_len: 8,
+            total_len: 8,
         };
         ptracker.download_started(0, 0);
         assert_eq!(ptracker.pcs.len(), 1);
@@ -889,6 +927,7 @@ mod tests {
             pcs: Vec::new(),
             chunk_len: 4,
             piece_len: 12,
+            total_len: 12,
         };
         let p1 = Bytes::from(vec![1]);
         let p2 = Bytes::from(vec![2]);
@@ -910,6 +949,7 @@ mod tests {
             pcs: Vec::new(),
             chunk_len: 4,
             piece_len: 8,
+            total_len: 16,
         };
 
         assert_eq!(ptracker.next_missing_chunk(), None);
@@ -934,6 +974,7 @@ mod tests {
             pcs: Vec::new(),
             chunk_len: 4,
             piece_len: 8,
+            total_len: 24,
         };
         let p1 = Bytes::from(vec![1]);
         let p2 = Bytes::from(vec![2]);
