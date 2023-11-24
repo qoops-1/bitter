@@ -5,7 +5,7 @@ use std::{
     process::exit,
 };
 
-const REQUEST_PIECE_LEN: usize = usize::pow(2, 14); // 16 KB
+const REQUEST_PIECE_LEN: u32 = u32::pow(2, 14); // 16 KB
 
 fn main() {
     let args: Vec<_> = env::args().collect();

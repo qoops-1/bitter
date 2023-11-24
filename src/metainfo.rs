@@ -112,7 +112,7 @@ impl BDecode for MetainfoInfo {
 
         let single_file = dict
             .get_val("length")
-            .and_then(|v| v.try_into_u32())
+            .and_then(|v| v.try_into_u64())
             .map(|l| MetainfoFile {
                 length: l,
                 path: PathBuf::from(name.clone()),
@@ -141,14 +141,14 @@ impl BDecode for MetainfoInfo {
 
 #[derive(Debug, Clone)]
 pub struct MetainfoFile {
-    pub length: u32,
+    pub length: u64,
     pub path: PathBuf,
 }
 
 impl BDecode for MetainfoFile {
     fn bdecode(benc: &BencodedValue) -> BitterResult<Self> {
         let dict = benc.try_into_dict()?;
-        let length = dict.get_val("length")?.try_into_u32()?.to_owned();
+        let length = dict.get_val("length")?.try_into_u64()?.to_owned();
         let path = PathBuf::from_iter(
             dict.get_val("path")?
                 .try_into_list()?

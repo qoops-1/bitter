@@ -62,7 +62,7 @@ impl Downloader {
                 event: AnnounceEvent::Started,
             },
         )?;
-        let total_len: usize = metainfo.info.files.iter().map(|f| f.length as usize).sum();
+        let total_len: u64 = metainfo.info.files.iter().map(|f| f.length).sum();
 
         let params = DownloadParams {
             peer_id: self

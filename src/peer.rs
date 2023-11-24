@@ -22,8 +22,8 @@ const MAX_REQUESTS_INFLIGHT: usize = 5;
 pub struct DownloadParams {
     pub peer_id: PeerId,
     pub metainfo: Arc<MetainfoInfo>,
-    pub req_piece_len: usize,
-    pub total_len: usize,
+    pub req_piece_len: u32,
+    pub total_len: u64,
 }
 
 pub struct PeerHandler<'a, T> {
@@ -40,9 +40,9 @@ pub struct PeerHandler<'a, T> {
 
 struct ProgressTracker {
     pcs: Vec<PieceInProgress>,
-    chunk_len: usize,
+    chunk_len: u32,
     piece_len: u32,
-    total_len: usize,
+    total_len: u64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -93,12 +93,14 @@ impl ProgressTracker {
         let piece = match self.pcs.iter_mut().find(|p| p.index == index) {
             Some(p) => p,
             None => {
+                let piece_len: u64 = self.piece_len.into();
+                let index_u64: u64 = index.into();
                 let chunks_per_piece;
-                if self.piece_len as usize * (index as usize + 1) > self.total_len {
-                    let last_piece_size = self.total_len % self.piece_len as usize;
-                    chunks_per_piece = roundup_div(last_piece_size, self.chunk_len);
+                if piece_len * (index_u64 + 1) > self.total_len {
+                    let last_piece_size: usize = (self.total_len % piece_len).try_into().unwrap();
+                    chunks_per_piece = roundup_div(last_piece_size, self.chunk_len as usize);
                 } else {
-                    chunks_per_piece = roundup_div(self.piece_len, self.chunk_len as u32) as usize;
+                    chunks_per_piece = roundup_div(self.piece_len, self.chunk_len) as usize;
                 }
                 let chunks = vec![ChunkStatus::Missing; chunks_per_piece];
 
@@ -107,7 +109,7 @@ impl ProgressTracker {
             }
         };
 
-        let chunk_no = begin as usize / self.chunk_len;
+        let chunk_no = (begin / self.chunk_len) as usize;
 
         piece.chunks[chunk_no] = ChunkStatus::Downloading;
     }
@@ -118,8 +120,7 @@ impl ProgressTracker {
         begin: u32,
         data: Bytes,
     ) -> BitterResult<PieceStatus> {
-        let chunk_len = self.chunk_len;
-        let chunk_no = begin as usize / chunk_len;
+        let chunk_no = (begin / self.chunk_len) as usize;
         let piece_pos_opt = self
             .pcs
             .iter()
@@ -163,7 +164,7 @@ impl ProgressTracker {
         for p in &self.pcs {
             for (chunk_no, c) in p.chunks.iter().enumerate() {
                 if matches!(c, ChunkStatus::Missing) {
-                    return Some((p.index, (chunk_no * self.chunk_len) as u32));
+                    return Some((p.index, chunk_no as u32 * self.chunk_len));
                 }
             }
         }
@@ -311,7 +312,6 @@ where
 
     async fn handle_piece(&mut self, index: u32, begin: u32, data: Bytes) -> BitterResult<()> {
         self.verify_piece(index, begin, data.len() as u32)?;
-        println!("received piece {}+{}", index, begin);
 
         if let Some(full_piece) = self.ptracker.complete_chunk(index, begin, data)? {
             // TODO: on hash mismatch re-request piece
@@ -408,20 +408,27 @@ where
     fn get_chunk_len(&self, index: u32, begin: u32) -> u32 {
         let piece_len = self.params.metainfo.piece_length;
         let total_pieces = self.params.metainfo.pieces.len() as u32;
-        let mut length = self.params.req_piece_len as u32;
-        if begin + self.params.req_piece_len as u32 > piece_len {
-            length = piece_len - begin;
+        let mut chunk_len = self.params.req_piece_len;
+        if begin + chunk_len > piece_len {
+            chunk_len = piece_len - begin;
         }
         if index == total_pieces - 1 {
-            let potential_total_len =
-                (index as usize * piece_len as usize) + (begin + length) as usize;
+            let index: u64 = index.into();
+            let piece_len: u64 = piece_len.into();
+            let begin: u64 = begin.into();
+            let chunk_len_u64: u64 = chunk_len.into();
+            let piece_start = index * piece_len;
+            let potential_total_len: u64 = piece_start + (begin + chunk_len_u64);
 
             if potential_total_len > self.params.total_len {
-                length -= (potential_total_len - self.params.total_len) as u32;
+                let exceeding_len: u32 = (potential_total_len - self.params.total_len)
+                    .try_into()
+                    .expect("exceeding length must not be larger than u32");
+                chunk_len -= exceeding_len;
             }
         }
 
-        length
+        chunk_len
     }
 }
 
@@ -432,7 +439,7 @@ async fn read_chunk(
     piece_len: u32,
     files: &Vec<MetainfoFile>,
 ) -> BitterResult<Bytes> {
-    let mut fm = identify_files(piece_no, chunk_offset, chunk_len, piece_len, files);
+    let mut fm = match_span_to_files(piece_no, chunk_offset, chunk_len, piece_len, files);
     let mut buf = BytesMut::with_capacity(chunk_len as usize);
     for (path, mut len) in fm.files {
         let mut file = OpenOptions::new()
@@ -467,7 +474,7 @@ async fn save_piece(
     files: &Vec<MetainfoFile>,
 ) -> BitterResult<()> {
     let length = chunks.iter().map(|c| c.remaining() as u32).sum();
-    let mut fm = identify_files(index, 0, length, piece_len, files);
+    let mut fm = match_span_to_files(index, 0, length, piece_len, files);
     let mut c_no: usize = 0;
     let mut c_offset: usize = 0;
     for (path, mut len) in fm.files {
@@ -480,7 +487,7 @@ async fn save_piece(
             .map_err(BitterMistake::new_err)?;
 
         if fm.offset != 0 {
-            file.seek(SeekFrom::Start(fm.offset.into()))
+            file.seek(SeekFrom::Start(fm.offset))
                 .await
                 .map_err(BitterMistake::new_err)?;
             fm.offset = 0;
@@ -505,38 +512,44 @@ async fn save_piece(
     Ok(())
 }
 
-fn identify_files(
+fn match_span_to_files(
     index: u32,
-    offset: u32,
-    mut length: u32,
+    span_offset: u32,
+    mut span_length: u32,
     piece_len: u32,
     files: &Vec<MetainfoFile>,
 ) -> FileMapping {
     let mut start_found = false;
     let mut bytes_seen = 0;
-    let chunk_start = index * piece_len + offset;
+    let index: u64 = index.into();
+    let piece_len: u64 = piece_len.into();
+    let span_offset: u64 = span_offset.into();
+    let chunk_start = index * piece_len + span_offset;
     let mut res = FileMapping::default();
     for f in files {
-        let mut f_len = f.length;
+        let mut file_len_left = f.length;
         bytes_seen += f.length;
 
         if !start_found && bytes_seen > chunk_start {
             start_found = true;
             res.offset = chunk_start - (bytes_seen - f.length);
-            f_len = bytes_seen - chunk_start;
+            file_len_left = bytes_seen - chunk_start;
         }
 
         if !start_found {
             continue;
         }
 
-        if length <= f_len {
-            res.files.push((f.path.as_path(), length as usize));
+        let span_length_u64: u64 = span_length.into();
+        if span_length_u64 <= file_len_left {
+            res.files.push((f.path.as_path(), span_length as usize));
             break;
         }
 
-        res.files.push((f.path.as_path(), f_len as usize));
-        length -= f_len;
+        res.files.push((f.path.as_path(), file_len_left as usize));
+
+        // cast to u32 should be safe because above we have checked that span_length (u32) > file_len_left
+        span_length -= file_len_left as u32;
     }
 
     res
@@ -544,7 +557,7 @@ fn identify_files(
 
 #[derive(Default, PartialEq, Eq, Debug)]
 struct FileMapping<'a> {
-    offset: u32,
+    offset: u64,
     files: Vec<(&'a Path, usize)>,
 }
 
@@ -561,7 +574,7 @@ mod tests {
         peer::{save_piece, ChunkStatus, PieceInProgress},
     };
 
-    use super::{identify_files, FileMapping, ProgressTracker};
+    use super::{match_span_to_files, FileMapping, ProgressTracker};
 
     #[test]
     fn identify_ftw_whole_file_test() {
@@ -580,14 +593,14 @@ mod tests {
         ];
 
         assert_eq!(
-            identify_files(0, 0, 4, 4, &files),
+            match_span_to_files(0, 0, 4, 4, &files),
             FileMapping {
                 offset: 0,
                 files: vec![(&f1, 4)],
             }
         );
         assert_eq!(
-            identify_files(1, 0, 4, 4, &files),
+            match_span_to_files(1, 0, 4, 4, &files),
             FileMapping {
                 offset: 0,
                 files: vec![(&f2, 4)],
@@ -605,14 +618,14 @@ mod tests {
         }];
 
         assert_eq!(
-            identify_files(1, 0, 4, 4, &files),
+            match_span_to_files(1, 0, 4, 4, &files),
             FileMapping {
                 offset: 4,
                 files: vec![(&f1, 4)],
             }
         );
         assert_eq!(
-            identify_files(2, 0, 4, 4, &files),
+            match_span_to_files(2, 0, 4, 4, &files),
             FileMapping {
                 offset: 8,
                 files: vec![(&f1, 4)],
@@ -637,7 +650,7 @@ mod tests {
         ];
 
         assert_eq!(
-            identify_files(1, 0, 4, 4, &files),
+            match_span_to_files(1, 0, 4, 4, &files),
             FileMapping {
                 offset: 4,
                 files: vec![(&f1, 2), (&f2, 2)],
@@ -667,7 +680,7 @@ mod tests {
         ];
 
         assert_eq!(
-            identify_files(0, 0, 7, 7, &files),
+            match_span_to_files(0, 0, 7, 7, &files),
             FileMapping {
                 offset: 0,
                 files: vec![(&f1, 2), (&f2, 2), (&f3, 3)],
@@ -686,7 +699,7 @@ mod tests {
         let mut h_piece: Vec<u8> = vec!['h' as u8; plen];
 
         let files = vec![MetainfoFile {
-            length: u32::MAX,
+            length: u64::MAX,
             path: file.clone(),
         }];
         save_piece(
@@ -737,7 +750,7 @@ mod tests {
         let (ones_piece2, ones_piece3) = ones_part2.split_at(ones_part2.len() / 3);
 
         let files = vec![MetainfoFile {
-            length: u32::MAX,
+            length: u64::MAX,
             path: file.clone(),
         }];
 
@@ -780,15 +793,15 @@ mod tests {
 
         let files = vec![
             MetainfoFile {
-                length: plen as u32 / 2,
+                length: plen as u64 / 2,
                 path: file1.clone(),
             },
             MetainfoFile {
-                length: plen as u32 / 4,
+                length: plen as u64 / 4,
                 path: file2.clone(),
             },
             MetainfoFile {
-                length: plen as u32,
+                length: plen as u64,
                 path: file3.clone(),
             },
         ];
@@ -843,15 +856,15 @@ mod tests {
 
         let files = vec![
             MetainfoFile {
-                length: plen as u32 / 2,
+                length: plen as u64 / 2,
                 path: file1.clone(),
             },
             MetainfoFile {
-                length: plen as u32 / 4,
+                length: plen as u64 / 4,
                 path: file2.clone(),
             },
             MetainfoFile {
-                length: plen as u32,
+                length: plen as u64,
                 path: file3.clone(),
             },
         ];

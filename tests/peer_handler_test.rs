@@ -18,10 +18,10 @@ async fn download_pieces() {
     let metafile = fs::read("./tests/testfiles/art2.jpg.torrent").unwrap();
     let file = fs::read("./tests/testfiles/art2.jpg").unwrap();
     let mut metainfo = bdecode::<Metainfo>(&metafile).unwrap();
-    let req_piece_len = metainfo.info.piece_length as usize / 4;
+    let req_piece_len = metainfo.info.piece_length / 4;
     let pieces: Vec<&[u8]> = file.chunks(metainfo.info.piece_length as usize).collect();
     let tempdir = TempDir::new("").unwrap();
-    let total_len = file.len();
+    let total_len = file.len() as u64;
 
     metainfo.info.files[0].path = tempdir.path().join(&metainfo.info.files[0].path);
     let params = DownloadParams {
@@ -57,7 +57,7 @@ async fn download_pieces() {
 
     conn.write(&Packet::Unchoke).await.unwrap();
 
-    for _ in 0..roundup_div(total_len, req_piece_len) {
+    for _ in 0..roundup_div(total_len, req_piece_len.into()) {
         let packet = conn.read().await.unwrap();
 
         match packet {
