@@ -9,9 +9,9 @@ edition = "2021"
 bit-vec = "0.6.3"
 bytes = "1.5.0"
 rand = "0.8.5"
+reqwest = "0.11.22"
 sha1 = "0.10.5"
 tokio = { version = "1.29.1", features = ["full"] }
-ureq = "2.7.1"
 
 [dev-dependencies]
 tempdir = "0.3.7"

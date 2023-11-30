@@ -2,11 +2,10 @@ use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::sync::Arc;
-use std::{fmt, io::Read, net::SocketAddr, str, time::Duration};
+use std::{fmt, net::SocketAddr, str, time::Duration};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::task::JoinSet;
-use ureq;
 
 use crate::accounting::Accounting;
 use crate::metainfo::{BitterHash, PeerId};
@@ -17,7 +16,6 @@ use crate::{
     utils::{urlencode, BitterMistake, BitterResult},
     Settings,
 };
-const MAX_MSG_SIZE: u64 = 1000 * 1000;
 
 pub fn download(metainfo: Metainfo, settings: Settings) -> BitterResult<()> {
     let mut sched = Downloader::new(settings);
@@ -51,7 +49,7 @@ impl Downloader {
         let total_pieces = metainfo.info.pieces.len();
         let acct = Accounting::new(total_pieces);
         let announce_resp = announce(
-            metainfo.announce,
+            &metainfo.announce,
             AnnounceRequest {
                 info_hash: metainfo.info.hash,
                 peer_id: &self.peer_id,
@@ -61,7 +59,8 @@ impl Downloader {
                 left: 0,
                 event: AnnounceEvent::Started,
             },
-        )?;
+        )
+        .await?;
         let total_len: u64 = metainfo.info.files.iter().map(|f| f.length).sum();
 
         let params = DownloadParams {
@@ -211,33 +210,36 @@ impl BDecode for Vec<Peer> {
     }
 }
 
-fn announce(url: String, req: AnnounceRequest) -> BitterResult<AnnouncePeers> {
-    let port_str = req.port.to_string();
-    let left_str = req.left.to_string();
+async fn announce<'a>(url: &str, req: AnnounceRequest<'a>) -> BitterResult<AnnouncePeers> {
     let event_str = req.event.to_string();
-    let uploaded_str = req.uploaded.to_string();
-    let downloaded_str = req.downloaded.to_string();
+    // I'll keep my custom urlencoding since I've heard urlencoding according bittorrent spec differs from http urlencoding
     let urlencoded_hash = urlencode(&req.info_hash);
-    let query_params: Vec<(&str, &str)> = vec![
-        ("info_hash", &urlencoded_hash),
-        ("peer_id", &req.peer_id),
-        ("port", &port_str),
-        ("uploaded", &uploaded_str),
-        ("downloaded", &downloaded_str),
-        ("left", &left_str),
-        ("event", &event_str),
-    ];
-    let mut buf = Vec::new();
-    ureq::get(&url)
-        .query_pairs(query_params)
-        .call()
-        .map_err(BitterMistake::new_err)
-        .and_then(|resp: ureq::Response| {
-            resp.into_reader()
-                .take(MAX_MSG_SIZE)
-                .read_to_end(&mut buf)
-                .map_err(BitterMistake::new_err)
-        })?;
+    let client = reqwest::Client::new();
+    // Split query in 2 calls for type inference
+    let response = client
+        .get(url)
+        .query(&[
+            ("uploaded", req.uploaded),
+            ("downloaded", req.downloaded),
+            ("left", req.left),
+            ("port", req.port.into()),
+        ])
+        .query(&[
+            ("peer_id", req.peer_id),
+            ("event", &event_str),
+            ("info_hash", &urlencoded_hash),
+        ])
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(BitterMistake::new_err)?;
+
+    // There's no way to limit the size of body in reqwest.
+    // Currently a PR is pending for that: https://github.com/seanmonstar/reqwest/pull/1855
+    // Right now it's possible to achieve it with streaming API,
+    // but it's ugly and requires turning on streaming features.
+    // So TODO: come back to this and see whether the PR got merged.
+    let buf = response.bytes().await.map_err(BitterMistake::new_err)?;
 
     let resp = bdecode::<AnnounceResponse>(&buf)?;
 
