@@ -17,6 +17,8 @@ use crate::{
     Settings,
 };
 
+const OPTIMISITIC_UNCHOKE_NUM: usize = 6;
+
 pub fn download(metainfo: Metainfo, settings: Settings) -> BitterResult<()> {
     let mut sched = Downloader::new(settings);
 
@@ -72,14 +74,19 @@ impl Downloader {
             metainfo: Arc::new(metainfo.info),
             req_piece_len: self.settings.req_piece_len,
             total_len,
+            start_peer_choked: true,
         };
 
         self.peers.extend(announce_resp.peers);
 
         let mut jset = JoinSet::new();
 
-        for p in self.peers.iter() {
-            jset.spawn(run_new_peer_conn(params.clone(), p.clone(), acct.clone()));
+        for (i, p) in self.peers.iter().enumerate() {
+            let mut cur_params = params.clone();
+            if i < OPTIMISITIC_UNCHOKE_NUM {
+                cur_params.start_peer_choked = false;
+            }
+            jset.spawn(run_new_peer_conn(cur_params, p.clone(), acct.clone()));
         }
 
         let server = TcpListener::bind((self.settings.ip, self.settings.port))

@@ -1,4 +1,4 @@
-use std::{io::SeekFrom, marker::PhantomData, path::Path, sync::Arc};
+use std::{io::SeekFrom, marker::PhantomData, path::Path, sync::Arc, time::Duration};
 
 use bit_vec::BitVec;
 use bytes::{Buf, Bytes, BytesMut};
@@ -6,6 +6,8 @@ use sha1::{Digest, Sha1};
 use tokio::{
     fs::OpenOptions,
     io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt},
+    select,
+    time::{self, MissedTickBehavior},
 };
 
 use crate::{
@@ -24,12 +26,14 @@ pub struct DownloadParams {
     pub metainfo: Arc<MetainfoInfo>,
     pub req_piece_len: u32,
     pub total_len: u64,
+    pub start_peer_choked: bool,
 }
 
 pub struct PeerHandler<'a, T> {
     acct: Accounting,
     params: &'a DownloadParams,
     ptracker: ProgressTracker,
+    stats: PeerStats,
     choked: bool,
     peer_choked: bool,
     interested: bool,
@@ -77,7 +81,7 @@ pub async fn run_peer_handler<T: Unpin + AsyncRead + AsyncWrite>(
     let handshake = conn.read_handshake().await?;
     match handshake {
         Handshake::Other => return Err(BitterMistake::new("Handshake failed. Unknown protocol")),
-        Handshake::Bittorrent(peer_hash, peer_id) => {
+        Handshake::Bittorrent(peer_hash, _) => {
             if peer_hash != params.metainfo.hash {
                 return Err(BitterMistake::new("info_hash mismatch"));
             }
@@ -186,6 +190,12 @@ impl ProgressTracker {
     }
 }
 
+#[derive(Default)]
+struct PeerStats {
+    recv_pieces: usize,
+    sent_pieces: usize,
+}
+
 impl<'a, T> PeerHandler<'a, T>
 where
     T: Unpin + AsyncRead + AsyncWrite,
@@ -201,8 +211,9 @@ where
             acct,
             params,
             ptracker,
+            stats: PeerStats::default(),
             choked: true,
-            peer_choked: true,
+            peer_choked: params.start_peer_choked,
             interested: false,
             peer_interested: false,
             phantom: PhantomData,
@@ -210,37 +221,68 @@ where
     }
 
     pub async fn run(&mut self, conn: &mut TcpConn<T>) -> BitterResult<()> {
-        loop {
-            let packet = conn.read().await?;
-            let mut needs_request = false;
+        if !self.peer_choked {
+            conn.write(&Packet::Unchoke).await?;
+        }
 
-            match packet {
-                Packet::Choke => self.handle_choke(),
-                Packet::Unchoke => self.handle_unchoke(conn).await?,
-                Packet::Interested => self.handle_interested(),
-                Packet::NotInterested => self.handle_not_interested(),
-                Packet::Have(i) => self.handle_have(i, conn).await?,
-                Packet::Bitfield(bitmap) => self.handle_bitfield(bitmap, conn).await?,
-                Packet::Request {
-                    index,
-                    begin,
-                    length,
-                } => self.handle_request(index, begin, length, conn).await?,
-                Packet::Piece { index, begin, data } => {
-                    self.handle_piece(index, begin, data).await?;
-                    needs_request = true;
+        let mut choking_fibrillation = time::interval(Duration::from_secs(10));
+        choking_fibrillation.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        loop {
+            select! {
+                _ = choking_fibrillation.tick() => {
+                    self.update_peer_choking(conn).await?;
                 }
-                Packet::Cancel {
-                    index,
-                    begin,
-                    length,
-                } => self.handle_cancel(index, begin, length),
-                _ => return Err(BitterMistake::new("Received unknown packet")),
-            }
-            if needs_request && !self.choked {
-                self.request_new_piece(conn).await?;
+                packet = conn.read() => {
+                    let mut needs_request = false;
+
+                    match packet? {
+                        Packet::Choke => self.handle_choke(),
+                        Packet::Unchoke => self.handle_unchoke(conn).await?,
+                        Packet::Interested => self.handle_interested(),
+                        Packet::NotInterested => self.handle_not_interested(),
+                        Packet::Have(i) => self.handle_have(i, conn).await?,
+                        Packet::Bitfield(bitmap) => self.handle_bitfield(bitmap, conn).await?,
+                        Packet::Request {
+                            index,
+                            begin,
+                            length,
+                        } => self.handle_request(index, begin, length, conn).await?,
+                        Packet::Piece { index, begin, data } => {
+                            self.handle_piece(index, begin, data).await?;
+                            needs_request = true;
+                        }
+                        Packet::Cancel {
+                            index,
+                            begin,
+                            length,
+                        } => self.handle_cancel(index, begin, length),
+                        _ => return Err(BitterMistake::new("Received unknown packet")),
+                    }
+                    if needs_request && !self.choked {
+                        self.request_new_piece(conn).await?;
+                    }
+                }
             }
         }
+    }
+
+    async fn update_peer_choking(&mut self, conn: &mut TcpConn<T>) -> BitterResult<()> {
+        let tft = self.gives_tit_for_tat();
+        if self.peer_choked && self.peer_interested && tft {
+            conn.write(&Packet::Unchoke).await?;
+            self.peer_choked = false;
+        } else if !self.peer_choked && !tft {
+            conn.write(&Packet::Choke).await?;
+            self.peer_choked = true;
+        }
+
+        Ok(())
+    }
+
+    #[inline]
+    fn gives_tit_for_tat(&self) -> bool {
+        self.stats.recv_pieces > 4 && self.stats.recv_pieces >= self.stats.sent_pieces
     }
 
     fn handle_choke(&mut self) {
@@ -282,7 +324,7 @@ where
     }
 
     async fn handle_request(
-        &self,
+        &mut self,
         piece_no: u32,
         chunk_offset: u32,
         chunk_len: u32,
@@ -301,6 +343,8 @@ where
             &self.params.metainfo.files,
         )
         .await?;
+
+        self.stats.sent_pieces += 1;
 
         conn.write(&Packet::Piece {
             index: piece_no,
@@ -325,6 +369,7 @@ where
             .await?;
             self.acct.mark_downloaded(index as usize);
         }
+        self.stats.recv_pieces += 1;
         Ok(())
     }
 

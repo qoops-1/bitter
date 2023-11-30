@@ -29,6 +29,7 @@ async fn download_pieces() {
         metainfo: Arc::new(metainfo.info.clone()),
         req_piece_len,
         total_len,
+        start_peer_choked: true
     };
     let (socket1, socket2) = duplex(usize::pow(2, 10));
 
