@@ -98,8 +98,7 @@ impl Downloader {
                 _ = jset.join_next() => {unimplemented!()}
                 res = server.accept() => {
                     // TODO: handle result properly, it can return WOULDBLOCK and etc
-                    let (stream, addr) = res.unwrap();
-                    let peer = Peer { addr, peer_id: None};
+                    let (stream, _addr) = res.unwrap();
 
                     jset.spawn(run_peer_handler(params.clone(), acct.clone(), stream));
                 }

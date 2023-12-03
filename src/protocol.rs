@@ -5,6 +5,7 @@ use crate::{
 use bit_vec::BitVec;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tracing::{info, trace};
 
 use crate::utils::BitterResult;
 
@@ -207,18 +208,11 @@ where
     }
 
     pub async fn read_handshake(&mut self) -> BitterResult<Handshake> {
-        let mut nbytes = 0;
-
         if !self.buf.is_empty() {
             panic!("wrong usage of read_handshake");
         }
-        while nbytes < MSG_LEN_BITTORRENT_HANDSHAKE {
-            nbytes += self
-                .inner
-                .read_buf(&mut self.buf)
-                .await
-                .map_err(BitterMistake::new_err)?;
-        }
+
+        self.read_nbytes(MSG_LEN_BITTORRENT_HANDSHAKE).await?;
 
         let len = self.buf.get_u8();
 
@@ -252,14 +246,10 @@ where
     }
 
     pub async fn read(&mut self) -> BitterResult<Packet> {
-        let mut nbytes = self.buf.remaining();
+        let mut already_read = self.buf.remaining();
 
-        while nbytes < MSG_LEN_LEN {
-            nbytes += self
-                .inner
-                .read_buf(&mut self.buf)
-                .await
-                .map_err(BitterMistake::new_err)?;
+        if already_read < MSG_LEN_LEN {
+            already_read += self.read_nbytes(MSG_LEN_LEN - already_read).await?;
         }
         let msg_len = self.buf.get_u32() as usize;
 
@@ -270,19 +260,39 @@ where
         } else if msg_len == 0 {
             return Ok(Packet::Keepalive);
         }
-        while nbytes < msg_len + MSG_LEN_LEN {
-            nbytes += self
+        if already_read < msg_len + MSG_LEN_LEN {
+            self.read_nbytes(msg_len + MSG_LEN_LEN - already_read)
+                .await?;
+        }
+        trace!(event = "read_packet", length = msg_len + MSG_LEN_LEN);
+        Packet::parse(self.buf.split_to(msg_len).freeze())
+    }
+
+    #[inline]
+    async fn read_nbytes(&mut self, n: usize) -> BitterResult<usize> {
+        let mut nbytes = 0;
+        while nbytes < n {
+            let rbytes = self
                 .inner
                 .read_buf(&mut self.buf)
                 .await
                 .map_err(BitterMistake::new_err)?;
+
+            // the buffer for input
+            assert!(rbytes != 0 || self.buf.has_remaining_mut());
+
+            if rbytes == 0 {
+                return Err(BitterMistake::new("connection closed"));
+            }
+            nbytes += rbytes;
         }
 
-        Packet::parse(self.buf.split_to(msg_len).freeze())
+        Ok(nbytes)
     }
 
     pub async fn write<'a>(&mut self, packet: &Packet) -> BitterResult<()> {
         let mut buf = packet.serialize();
+        trace!(event = "write_packet", length = buf.len());
         while buf.has_remaining() {
             self.inner
                 .write_buf(&mut buf)

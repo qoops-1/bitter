@@ -5,6 +5,7 @@ use std::sync::{
 
 use bit_vec::BitVec;
 use rand::{seq::SliceRandom, thread_rng, Rng};
+use tracing::debug;
 
 #[derive(Clone)]
 pub struct Accounting {
@@ -54,6 +55,7 @@ impl Accounting {
     pub fn get_next_to_download(&mut self) -> Option<usize> {
         while let Some(i) = self.available.pop() {
             if !self.reserved[i].swap(true, Ordering::Acquire) {
+                debug!(event = "piece_reserved", piece_no = i);
                 return Some(i);
             }
         }

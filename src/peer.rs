@@ -9,6 +9,7 @@ use tokio::{
     select,
     time::{self, MissedTickBehavior},
 };
+use tracing::{info, instrument, Level};
 
 use crate::{
     accounting::Accounting,
@@ -64,6 +65,7 @@ enum ChunkStatus {
 
 type PieceStatus = Option<Vec<Bytes>>;
 
+// #[instrument(skip(params, acct, stream))]
 pub async fn run_peer_handler<T: Unpin + AsyncRead + AsyncWrite>(
     params: DownloadParams,
     acct: Accounting,
@@ -227,6 +229,7 @@ where
 
         let mut choking_fibrillation = time::interval(Duration::from_secs(10));
         choking_fibrillation.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        choking_fibrillation.reset();
 
         loop {
             select! {
@@ -267,12 +270,15 @@ where
         }
     }
 
+    #[instrument(skip(self, conn))]
     async fn update_peer_choking(&mut self, conn: &mut TcpConn<T>) -> BitterResult<()> {
         let tft = self.gives_tit_for_tat();
         if self.peer_choked && self.peer_interested && tft {
+            info!("unchoke_peer");
             conn.write(&Packet::Unchoke).await?;
             self.peer_choked = false;
         } else if !self.peer_choked && !tft {
+            info!("choke_peer");
             conn.write(&Packet::Choke).await?;
             self.peer_choked = true;
         }
@@ -285,27 +291,32 @@ where
         self.stats.recv_pieces > 4 && self.stats.recv_pieces >= self.stats.sent_pieces
     }
 
+    #[instrument(skip(self))]
     fn handle_choke(&mut self) {
         self.choked = true;
         // TODO: discard reservations and try to get them again on unchoke
         self.ptracker.reset_downloading();
     }
 
+    #[instrument(skip(self, conn))]
     async fn handle_unchoke(&mut self, conn: &mut TcpConn<T>) -> BitterResult<()> {
         self.choked = false;
         self.ramp_up_piece_requests(conn).await
     }
 
+    #[instrument(skip(self))]
     fn handle_interested(&mut self) {
         self.peer_interested = true;
         // todo!()
     }
 
+    #[instrument(skip(self))]
     fn handle_not_interested(&mut self) {
         self.peer_interested = false;
         // todo!()
     }
 
+    #[instrument(skip(self, conn))]
     async fn handle_have(&mut self, index: u32, conn: &mut TcpConn<T>) -> BitterResult<()> {
         self.acct.mark_available(index as usize);
         if !self.interested && !self.acct.piece_is_reserved(index as usize) {
@@ -314,6 +325,7 @@ where
         Ok(())
     }
 
+    #[instrument(skip(self, bv, conn))]
     async fn handle_bitfield(&mut self, bv: BitVec, conn: &mut TcpConn<T>) -> BitterResult<()> {
         self.acct.init_available(bv);
         if self.acct.have_next_to_download() {
@@ -323,6 +335,7 @@ where
         Ok(())
     }
 
+    #[instrument(skip(self, conn))]
     async fn handle_request(
         &mut self,
         piece_no: u32,
@@ -354,6 +367,7 @@ where
         .await
     }
 
+    #[instrument(skip(self, data))]
     async fn handle_piece(&mut self, index: u32, begin: u32, data: Bytes) -> BitterResult<()> {
         self.verify_piece(index, begin, data.len() as u32)?;
 
@@ -373,6 +387,7 @@ where
         Ok(())
     }
 
+    #[instrument(skip(self))]
     fn handle_cancel(&self, _index: u32, _begin: u32, _length: u32) {
         // Nothing to do right now, we're processing requests as they come and must've already sent the piece
     }
@@ -409,6 +424,7 @@ where
         Ok(())
     }
 
+    #[instrument(skip(self, conn))]
     async fn request_new_piece(&mut self, conn: &mut TcpConn<T>) -> BitterResult<()> {
         if !self.interested {
             return Ok(());
@@ -421,8 +437,7 @@ where
             Some(next_chunk) => next_chunk,
             None => {
                 if !self.ptracker.have_downloads() {
-                    self.interested = false;
-                    return conn.write(&Packet::NotInterested).await;
+                    self.signal_not_interested(conn).await?;
                 }
                 return Ok(());
             }
@@ -446,8 +461,15 @@ where
     }
 
     async fn signal_interested(&mut self, conn: &mut TcpConn<T>) -> BitterResult<()> {
+        info!("send_interested");
         self.interested = true;
         conn.write(&Packet::Interested).await
+    }
+
+    async fn signal_not_interested(&mut self, conn: &mut TcpConn<T>) -> BitterResult<()> {
+        info!("send_not_interested");
+        self.interested = false;
+        conn.write(&Packet::NotInterested).await
     }
 
     fn get_chunk_len(&self, index: u32, begin: u32) -> u32 {
@@ -477,6 +499,7 @@ where
     }
 }
 
+#[instrument(skip(files))]
 async fn read_chunk(
     piece_no: u32,
     chunk_offset: u32,
@@ -508,9 +531,11 @@ async fn read_chunk(
         }
     }
 
+    info!(event = "chunk_read", piece_no, chunk_offset);
     Ok(buf.freeze())
 }
 
+#[instrument(skip(chunks, files))]
 // Doesn't care about sizes of chunks, simply determines the files that need to be written via index and meta piece_len, and writes the chunks there sequentially
 async fn save_piece(
     index: u32,
@@ -554,6 +579,8 @@ async fn save_piece(
             len -= c_write.len();
         }
     }
+
+    info!(event = "piece_saved", piece_no = index);
     Ok(())
 }
 
