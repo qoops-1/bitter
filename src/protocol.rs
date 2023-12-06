@@ -1,3 +1,5 @@
+use std::mem;
+
 use crate::{
     metainfo::{BitterHash, PeerId, BITTORRENT_HASH_LEN, BITTORRENT_PEERID_LEN},
     utils::BitterMistake,
@@ -5,7 +7,7 @@ use crate::{
 use bit_vec::BitVec;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tracing::{info, trace};
+use tracing::trace;
 
 use crate::utils::BitterResult;
 
@@ -251,7 +253,12 @@ where
         if already_read < MSG_LEN_LEN {
             already_read += self.read_nbytes(MSG_LEN_LEN - already_read).await?;
         }
-        let msg_len = self.buf.get_u32() as usize;
+
+        // can't just use self.buf.get_u32, because it advances buf ptr.
+        // In case this call to read is cancelled in `select` before returning the packet, 
+        // the pointer would stay in the wrong place.
+        let len_bytes: [u8; 4] = self.buf[0..4].try_into().unwrap();
+        let msg_len = u32::from_be_bytes(len_bytes) as usize;
 
         if msg_len > MAX_PACKET_LEN {
             return Err(BitterMistake::new_owned(format!(
@@ -265,6 +272,7 @@ where
                 .await?;
         }
         trace!(event = "read_packet", length = msg_len + MSG_LEN_LEN);
+        self.buf.advance(mem::size_of_val(&len_bytes));
         Packet::parse(self.buf.split_to(msg_len).freeze())
     }
 
