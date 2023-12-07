@@ -272,7 +272,7 @@ where
                 .await?;
         }
         trace!(event = "read_packet", length = msg_len + MSG_LEN_LEN);
-        self.buf.advance(mem::size_of_val(&len_bytes));
+        self.buf.advance(MSG_LEN_LEN);
         Packet::parse(self.buf.split_to(msg_len).freeze())
     }
 
@@ -311,7 +311,7 @@ where
     }
 
     pub async fn close(&mut self) {
-        self.inner.shutdown().await;
+        let _ = self.inner.shutdown().await;
     }
 }
 

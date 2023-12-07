@@ -91,6 +91,7 @@ pub async fn run_peer_handler<T: Unpin + AsyncRead + AsyncWrite>(
         }
     }
     handler.run(&mut conn).await?;
+    conn.close().await;
     Ok(())
 }
 
@@ -263,7 +264,10 @@ where
                         _ => return Err(BitterMistake::new("Received unknown packet")),
                     }
                     if needs_request && !self.choked {
-                        self.request_new_piece(conn).await?;
+                        let done = self.request_new_piece(conn).await?;
+                        if done {
+                            return Ok(())
+                        }
                     }
                 }
             }
@@ -425,9 +429,9 @@ where
     }
 
     #[instrument(skip(self, conn))]
-    async fn request_new_piece(&mut self, conn: &mut TcpConn<T>) -> BitterResult<()> {
+    async fn request_new_piece(&mut self, conn: &mut TcpConn<T>) -> BitterResult<bool> {
         if !self.interested {
-            return Ok(());
+            return Ok(false);
         }
         let next_chunk_opt = self
             .ptracker
@@ -436,10 +440,8 @@ where
         let (index, begin) = match next_chunk_opt {
             Some(next_chunk) => next_chunk,
             None => {
-                if !self.ptracker.have_downloads() {
-                    self.signal_not_interested(conn).await?;
-                }
-                return Ok(());
+                let done = !self.ptracker.have_downloads();
+                return Ok(done);
             }
         };
         let length = self.get_chunk_len(index, begin);
@@ -450,7 +452,9 @@ where
             begin,
             length,
         })
-        .await
+        .await?;
+
+        Ok(false)
     }
 
     async fn ramp_up_piece_requests(&mut self, conn: &mut TcpConn<T>) -> BitterResult<()> {

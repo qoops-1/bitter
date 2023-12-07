@@ -13,7 +13,7 @@ use tempdir::TempDir;
 use tokio::{self, io::duplex};
 
 #[tokio::test]
-async fn download_pieces() {
+async fn single_peer_basic_download() {
     let my_peer_id = PeerId([1; 20]);
     let metafile = fs::read("./tests/testfiles/art2.jpg.torrent").unwrap();
     let file = fs::read("./tests/testfiles/art2.jpg").unwrap();
@@ -33,7 +33,7 @@ async fn download_pieces() {
     };
     let (socket1, socket2) = duplex(usize::pow(2, 10));
 
-    let res = tokio::spawn(async move {
+    let jhandle = tokio::spawn(async move {
         let acct = Accounting::new(params.metainfo.pieces.len());
         run_peer_handler(params, acct, socket2).await.unwrap();
     });
@@ -80,7 +80,7 @@ async fn download_pieces() {
         }
     }
 
-    assert_eq!(conn.read().await.unwrap(), Packet::NotInterested);
+    jhandle.await.unwrap();
 
     let downloaded_file = fs::read(&metainfo.info.files[0].path).unwrap();
     assert_eq!(file, downloaded_file);
