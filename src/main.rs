@@ -1,4 +1,5 @@
 use bitter::{run, Settings};
+use tracing_subscriber::FmtSubscriber;
 use std::{
     env,
     net::{IpAddr, Ipv4Addr},
@@ -23,6 +24,9 @@ fn main() {
         ip: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
         req_piece_len: REQUEST_PIECE_LEN,
     };
+
+    let subscriber = FmtSubscriber::new();
+    tracing::subscriber::set_global_default(subscriber).unwrap();
 
     run(filename, settings).unwrap_or_else(|err| {
         eprintln!("{}", err);

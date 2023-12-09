@@ -26,9 +26,7 @@ pub struct Settings {
 
 pub fn run(filename: &str, settings: Settings) -> BitterResult<()> {
     let metafile = fs::read(filename).map_err(BitterMistake::new_err)?;
-    let parsed_metainfo: Metainfo = bdecode(&metafile)?;
-    println!("Metadata file:");
-    print!("{:#?}", parsed_metainfo);
+    let parsed_metainfo: Metainfo = bdecode(&metafile).map_err(|e| BitterMistake::new_owned(format!("Error parsing metadata file: {}", e.to_string())))?;
 
     // setup_dirs(&parsed_metainfo.info.files)?;
     download(parsed_metainfo, settings)

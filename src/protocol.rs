@@ -1,5 +1,3 @@
-use std::mem;
-
 use crate::{
     metainfo::{BitterHash, PeerId, BITTORRENT_HASH_LEN, BITTORRENT_PEERID_LEN},
     utils::BitterMistake,

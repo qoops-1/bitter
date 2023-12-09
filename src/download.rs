@@ -1,5 +1,6 @@
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
+use tracing::info;
 use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::sync::Arc;
 use std::{fmt, net::SocketAddr, str, time::Duration};
@@ -95,7 +96,18 @@ impl Downloader {
 
         loop {
             select! {
-                _ = jset.join_next() => {unimplemented!()}
+                res = jset.join_next() => {
+                    match res {
+                        Some(Ok(Ok(()))) | None => {
+                            break;
+                        }
+                        Some(Err(e)) => {
+                            eprintln!("peer exited with error: {}", e);
+                        }
+                        Some(Ok(Err(e))) => {
+                            eprintln!("peer exited with error: {}", e);
+                        }
+                }}
                 res = server.accept() => {
                     // TODO: handle result properly, it can return WOULDBLOCK and etc
                     let (stream, _addr) = res.unwrap();
@@ -104,6 +116,8 @@ impl Downloader {
                 }
             }
         }
+
+        Ok(())
     }
 }
 
@@ -224,6 +238,7 @@ async fn announce<'a>(url: &str, req: AnnounceRequest<'a>) -> BitterResult<Annou
     // Split query in 2 calls for type inference
     let response = client
         .get(url)
+        .query(&[("info_hash", req.info_hash.0.as_slice())])
         .query(&[
             ("uploaded", req.uploaded),
             ("downloaded", req.downloaded),
@@ -238,15 +253,14 @@ async fn announce<'a>(url: &str, req: AnnounceRequest<'a>) -> BitterResult<Annou
         .timeout(Duration::from_secs(30))
         .send()
         .await
-        .map_err(BitterMistake::new_err)?;
-
+        .map_err(BitterMistake::new_err).unwrap();
+    
     // There's no way to limit the size of body in reqwest.
     // Currently a PR is pending for that: https://github.com/seanmonstar/reqwest/pull/1855
     // Right now it's possible to achieve it with streaming API,
     // but it's ugly and requires turning on streaming features.
     // So TODO: come back to this and see whether the PR got merged.
     let buf = response.bytes().await.map_err(BitterMistake::new_err)?;
-
     let resp = bdecode::<AnnounceResponse>(&buf)?;
 
     match resp {

@@ -9,7 +9,7 @@ use tokio::{
     select,
     time::{self, MissedTickBehavior},
 };
-use tracing::{info, instrument, Level};
+use tracing::{info, instrument};
 
 use crate::{
     accounting::Accounting,
