@@ -1,10 +1,10 @@
 use bitter::{run, Settings};
-use tracing_subscriber::FmtSubscriber;
 use std::{
     env,
     net::{IpAddr, Ipv4Addr},
     process::exit,
 };
+use tracing_subscriber::FmtSubscriber;
 
 const REQUEST_PIECE_LEN: u32 = u32::pow(2, 14); // 16 KB
 

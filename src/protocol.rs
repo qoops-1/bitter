@@ -253,7 +253,7 @@ where
         }
 
         // can't just use self.buf.get_u32, because it advances buf ptr.
-        // In case this call to read is cancelled in `select` before returning the packet, 
+        // In case this call to read is cancelled in `select` before returning the packet,
         // the pointer would stay in the wrong place.
         let len_bytes: [u8; 4] = self.buf[0..4].try_into().unwrap();
         let msg_len = u32::from_be_bytes(len_bytes) as usize;

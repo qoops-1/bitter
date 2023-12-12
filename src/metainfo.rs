@@ -1,6 +1,9 @@
+use std::convert::identity;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
+use std::str;
 
+use serde::Serialize;
 use sha1::{Digest, Sha1};
 
 use crate::bencoding::*;
@@ -26,6 +29,15 @@ impl DerefMut for BitterHash {
     }
 }
 
+impl Serialize for BitterHash {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(unsafe { str::from_utf8_unchecked(&self.0) })
+    }
+}
+
 impl TryFrom<&[u8]> for BitterHash {
     type Error = BitterMistake;
 
@@ -39,6 +51,15 @@ impl TryFrom<&[u8]> for BitterHash {
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerId(pub [u8; BITTORRENT_PEERID_LEN]);
+
+impl Serialize for PeerId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(unsafe { str::from_utf8_unchecked(&self.0) })
+    }
+}
 
 impl Deref for PeerId {
     type Target = [u8];
@@ -64,18 +85,40 @@ impl TryFrom<&[u8]> for PeerId {
 
 #[derive(Debug)]
 pub struct Metainfo {
-    pub announce: String,
+    pub announce_list: Vec<Vec<String>>,
     pub info: MetainfoInfo,
 }
 
 impl BDecode for Metainfo {
     fn bdecode(benc: &BencodedValue) -> BitterResult<Self> {
         let dict = benc.try_into_dict()?;
-        let announce = dict.get_val("announce")?.try_into_string()?.to_owned();
+        let announce_list_tiers: Vec<&BencodedValue> = dict
+            .get_val("announce_list")
+            .and_then(|l| l.try_into_list())
+            .ok()
+            .map(|tier| tier.iter().collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        let mut announce_list: Vec<Vec<String>> = announce_list_tiers
+            .into_iter()
+            .map(|tier| {
+                tier.try_into_list()
+                    .map(|l| l.iter())
+                    .unwrap_or_default()
+                    .map(|tracker| tracker.try_into_string().map(str::to_owned))
+                    .collect::<BitterResult<Vec<_>>>()
+            })
+            .collect::<BitterResult<Vec<_>>>()
+            .unwrap_or_default();
+        if announce_list.is_empty() {
+            let announce = dict.get_val("announce")?.try_into_string()?.to_owned();
+
+            announce_list.push(vec![announce]);
+        }
         let info = dict.get_val("info")?;
 
         Ok(Metainfo {
-            announce,
+            announce_list,
             info: MetainfoInfo::bdecode(info)?,
         })
     }
@@ -152,7 +195,7 @@ impl BDecode for MetainfoFile {
         let path = PathBuf::from_iter(
             dict.get_val("path")?
                 .try_into_list()?
-                .into_iter()
+                .iter()
                 .map(|v| v.try_into_string())
                 .collect::<BitterResult<Vec<_>>>()?,
         );

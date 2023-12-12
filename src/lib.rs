@@ -15,6 +15,7 @@ mod download;
 pub mod metainfo;
 pub mod peer;
 pub mod protocol;
+mod tracker;
 pub mod utils;
 
 #[derive(Clone)]
@@ -26,7 +27,9 @@ pub struct Settings {
 
 pub fn run(filename: &str, settings: Settings) -> BitterResult<()> {
     let metafile = fs::read(filename).map_err(BitterMistake::new_err)?;
-    let parsed_metainfo: Metainfo = bdecode(&metafile).map_err(|e| BitterMistake::new_owned(format!("Error parsing metadata file: {}", e.to_string())))?;
+    let parsed_metainfo: Metainfo = bdecode(&metafile).map_err(|e| {
+        BitterMistake::new_owned(format!("Error parsing metadata file: {}", e.to_string()))
+    })?;
 
     // setup_dirs(&parsed_metainfo.info.files)?;
     download(parsed_metainfo, settings)

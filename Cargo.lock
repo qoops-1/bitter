@@ -70,6 +70,7 @@ dependencies = [
  "bytes",
  "rand 0.8.5",
  "reqwest",
+ "serde",
  "sha1",
  "tempdir",
  "tokio",
