@@ -4,6 +4,7 @@ use std::{
     net::{IpAddr, Ipv4Addr},
     process::exit,
 };
+use tracing::level_filters::LevelFilter;
 use tracing_subscriber::FmtSubscriber;
 
 const REQUEST_PIECE_LEN: u32 = u32::pow(2, 14); // 16 KB
@@ -25,7 +26,9 @@ fn main() {
         req_piece_len: REQUEST_PIECE_LEN,
     };
 
-    let subscriber = FmtSubscriber::new();
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(LevelFilter::DEBUG)
+        .finish();
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
     run(filename, settings).unwrap_or_else(|err| {

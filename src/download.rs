@@ -1,20 +1,16 @@
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
-use serde::Serialize;
-use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
+use tracing::debug;
 use std::sync::Arc;
-use std::{fmt, net::SocketAddr, str, time::Duration};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::task::JoinSet;
-use tracing::info;
 
 use crate::accounting::Accounting;
-use crate::metainfo::{BitterHash, PeerId};
+use crate::metainfo::PeerId;
 use crate::peer::{run_peer_handler, DownloadParams};
 use crate::tracker::{Peer, Tracker};
 use crate::{
-    bencoding::{bdecode, BDecode, BencodedValue},
     metainfo::Metainfo,
     utils::{BitterMistake, BitterResult},
     Settings,
@@ -58,9 +54,11 @@ impl Downloader {
             .as_bytes()
             .try_into()
             .expect("peer_id contains more bytes than expected");
-        let mut tracker = Tracker::new(&metainfo, peer_id, self.settings.port);
-        let announce_resp = tracker.announce_start().await?;
         let total_len: u64 = metainfo.info.files.iter().map(|f| f.length).sum();
+
+        let mut tracker = Tracker::new(&metainfo, peer_id, self.settings.port, total_len).await?;
+        let announce_resp = tracker.announce_start().await?;
+        
 
         let params = DownloadParams {
             peer_id,
@@ -91,6 +89,7 @@ impl Downloader {
                 res = jset.join_next() => {
                     match res {
                         Some(Ok(Ok(()))) | None => {
+                            debug!("peer_exited");
                             break;
                         }
                         Some(Err(e)) => {

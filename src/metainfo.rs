@@ -1,4 +1,3 @@
-use std::convert::identity;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::str;
@@ -83,7 +82,7 @@ impl TryFrom<&[u8]> for PeerId {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Metainfo {
     pub announce_list: Vec<Vec<String>>,
     pub info: MetainfoInfo,
@@ -93,7 +92,7 @@ impl BDecode for Metainfo {
     fn bdecode(benc: &BencodedValue) -> BitterResult<Self> {
         let dict = benc.try_into_dict()?;
         let announce_list_tiers: Vec<&BencodedValue> = dict
-            .get_val("announce_list")
+            .get_val("announce-list")
             .and_then(|l| l.try_into_list())
             .ok()
             .map(|tier| tier.iter().collect::<Vec<_>>())
@@ -124,7 +123,7 @@ impl BDecode for Metainfo {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetainfoInfo {
     pub name: String,
     pub piece_length: u32,
@@ -182,7 +181,7 @@ impl BDecode for MetainfoInfo {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetainfoFile {
     pub length: u64,
     pub path: PathBuf,
@@ -201,5 +200,41 @@ impl BDecode for MetainfoFile {
         );
 
         Ok(MetainfoFile { length, path })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs::File, io::Read, path::PathBuf};
+
+    use crate::bencoding::bdecode;
+
+    use super::{Metainfo, MetainfoInfo, MetainfoFile, BitterHash};
+
+    #[test]
+    fn art2_metainfo_parsing() {
+        let mut file = File::open("./tests/testfiles/art2.jpg.torrent").unwrap();
+
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+
+        let parsed: Metainfo = bdecode(&bytes).unwrap();
+
+        let expected = Metainfo {
+            announce_list: vec![
+                vec![String::from("https://example.com/")],
+            ],
+            info: MetainfoInfo {
+                name: String::from("art2.jpg"),
+                piece_length: 32768,
+                pieces: vec![BitterHash([11, 6, 122, 29, 62, 90, 105, 71, 87, 52, 246, 26, 246, 255, 28, 164, 23, 78, 227, 69]), BitterHash([6, 46, 144, 5, 99, 157, 75, 107, 219, 64, 75, 97, 99, 64, 211, 252, 187, 93, 252, 181])],
+                files: vec![MetainfoFile { 
+                    length: 43697,
+                    path: PathBuf::from("art2.jpg"),
+                }],
+                hash: BitterHash([0x24, 0x95, 0xde, 0x6f, 0x84, 0xf0, 0xd0, 0x5a, 0x6c, 0x68, 0x7c, 0x3a, 0x30, 0xe2, 0xf7, 0xfd, 0x3d, 0x33, 0x52, 0x99])
+            }
+        };
+        assert_eq!(parsed, expected);
     }
 }

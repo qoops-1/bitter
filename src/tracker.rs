@@ -1,19 +1,23 @@
 use core::fmt;
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
-    slice::Iter,
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs},
     str,
-    time::Duration, mem,
+    time::Duration,
 };
 
+use bytes::{Buf, BufMut, BytesMut};
 use rand::{seq::SliceRandom, thread_rng};
-use reqwest::{Client, Response};
+use reqwest::{Client, Url};
 use serde::Serialize;
+use tokio::{
+    net::UdpSocket,
+    time::timeout,
+};
+use tracing::debug;
 
 use crate::{
     bencoding::{bdecode, BDecode, BencodedValue},
     metainfo::{BitterHash, Metainfo, PeerId},
-    peer,
     utils::{BitterMistake, BitterResult},
 };
 
@@ -54,17 +58,20 @@ impl<'a> Iterator for AnnounceListIter<'a> {
 }
 
 pub struct Tracker {
-    client: Client,
+    http_client: Client,
+    udp_socket: UdpSocket,
     peer_id: PeerId,
     port: u16,
     info_hash: BitterHash,
-    total_pieces: u64,
+    total_len: u64,
     trackers: Vec<Vec<String>>,
 }
 impl Tracker {
-    pub fn new(meta: &Metainfo, peer_id: PeerId, port: u16) -> Self {
-        let client = Client::new();
-        let total_pieces = meta.info.pieces.len() as u64;
+    pub async fn new(meta: &Metainfo, peer_id: PeerId, port: u16, total_len: u64) -> BitterResult<Self> {
+        let http_client = Client::new();
+        let udp_socket = UdpSocket::bind("0.0.0.0:0")
+            .await
+            .map_err(BitterMistake::new_err)?;
         let mut rng = thread_rng();
 
         let mut trackers = Vec::with_capacity(meta.announce_list.len());
@@ -74,14 +81,15 @@ impl Tracker {
             trackers.push(t);
         }
 
-        Tracker {
-            client,
+        Ok(Tracker {
+            http_client,
+            udp_socket,
             peer_id,
             port,
             info_hash: meta.info.hash,
-            total_pieces,
+            total_len,
             trackers,
-        }
+        })
     }
 
     pub async fn announce_start(&mut self) -> BitterResult<Vec<Peer>> {
@@ -91,51 +99,47 @@ impl Tracker {
             port: self.port,
             uploaded: 0,
             downloaded: 0,
-            left: self.total_pieces,
+            left: self.total_len,
             event: AnnounceEvent::Started,
+            numwant: 50,
+            compact: true,
         };
 
         let mut err = BitterMistake::new("No trackers in the list");
         let mut iter = AnnounceListIter::new(&self.trackers);
 
         for url in &mut iter {
-            let response = self
-                .client
-                .get(url)
-                .query(&req)
-                .timeout(Duration::from_secs(30))
-                .send()
-                .await
-                .map_err(BitterMistake::new_err);
-
-            match response {
-                Ok(peers_resp) => match Self::parse_response(peers_resp).await {
-                    Ok(parsed_peers) => {
-                        self.move_up_current(iter.tier, iter.tracker_pos);
-                        return Ok(parsed_peers);
-                    }
-                    Err(e) => err = e,
-                },
+            match self.send_announce_request(url, &req).await {
+                Ok(peers_resp) => {
+                    debug!(event="received_peers", tracker=url, num=peers_resp.len());
+                    self.move_up_current(iter.tier, iter.tracker_pos);
+                    return Ok(peers_resp);
+                }
                 Err(e) => err = e,
             }
+            debug!(
+                event = "tracker_error",
+                error = err.to_string(),
+                tracker = url
+            );
         }
 
         Err(err)
     }
 
-    async fn parse_response(response: Response) -> BitterResult<Vec<Peer>> {
-        // There's no way to limit the size of body in reqwest.
-        // Currently a PR is pending for that: https://github.com/seanmonstar/reqwest/pull/1855
-        // Right now it's possible to achieve it with streaming API,
-        // but it's ugly and requires turning on streaming features.
-        // So TODO: come back to this and see whether the PR got merged.
-        let buf = response.bytes().await.map_err(BitterMistake::new_err)?;
-        let resp = bdecode::<AnnounceResponse>(&buf)?;
-        match resp {
-            AnnounceResponse::Failure(f) => Err(BitterMistake::new_owned(format!(
-                "Error received from tracker: {f}"
-            ))),
-            AnnounceResponse::Peers(resp) => Result::Ok(resp.peers),
+    async fn send_announce_request(
+        &self,
+        url: &str,
+        req: &AnnounceRequest,
+    ) -> BitterResult<Vec<Peer>> {
+        if url.starts_with("http://") || url.starts_with("https://") {
+            http_announce(&self.http_client, url, req).await
+        } else if url.starts_with("udp://") {
+            udp_announce(&self.udp_socket, url, req).await
+        } else {
+            Err(BitterMistake::new_owned(format!(
+                "invalid schema in tracker url: {url}"
+            )))
         }
     }
 
@@ -147,6 +151,200 @@ impl Tracker {
     }
 }
 
+async fn http_announce(
+    client: &Client,
+    url: &str,
+    req: &AnnounceRequest,
+) -> BitterResult<Vec<Peer>> {
+    let response = client
+        .get(url)
+        .query(&req)
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(BitterMistake::new_err)?;
+
+    // There's no way to limit the size of body in reqwest.
+    // Currently a PR is pending for that: https://github.com/seanmonstar/reqwest/pull/1855
+    // Right now it's possible to achieve it with streaming API,
+    // but it's ugly and requires turning on streaming features.
+    // So TODO: come back to this and see whether the PR got merged.
+    let buf = response.bytes().await.map_err(BitterMistake::new_err)?;
+    let resp = bdecode::<AnnounceResponse>(&buf)?;
+    match resp {
+        AnnounceResponse::Failure(f) => Err(BitterMistake::new_owned(format!(
+            "Error received from tracker: {f}"
+        ))),
+        AnnounceResponse::Peers(resp) => Result::Ok(resp.peers),
+    }
+}
+
+struct UdpConn(u64);
+
+const UDP_CONN_RESPONSE_LEN: usize = 16;
+const UDP_ANNOUNCE_REQUEST_LEN: usize = 98;
+const UDP_ANNOUNCE_RESPONSE_MIN_LEN: usize = 20;
+const UDP_ANNOUNCE_RESPONSE_MAX_LEN: usize = UDP_ANNOUNCE_RESPONSE_MIN_LEN + 6 * 50; // min response + 50 peers
+
+const UDP_ACTION_CONNECT: u32 = 0;
+const UDP_ACTION_ANNOUNCE: u32 = 1;
+
+async fn udp_connect<T: tokio::net::ToSocketAddrs>(socket: &UdpSocket, url: T) -> BitterResult<UdpConn> {
+    
+    for i in 0..5 {
+        let mut send_buf = BytesMut::new();
+        let tx_id = rand::random::<u32>();
+        send_buf.put_u64(0x41727101980); // magic constant
+        send_buf.put_u32(0); // action=connect
+        send_buf.put_u32(tx_id);
+        let mut write_len = send_buf.len();
+        while write_len > 0 {
+            write_len -= socket
+                .send_to(&send_buf, &url)
+                .await
+                .map_err(BitterMistake::new_err)?;
+        }
+        let mut recv_buf = BytesMut::with_capacity(UDP_CONN_RESPONSE_LEN);
+
+        match timeout(
+            Duration::from_secs(15 * (u64::pow(2, i))),
+            socket.recv_buf_from(&mut recv_buf),
+        )
+        .await
+        {
+            Ok(Ok((nbytes, _addr))) => {
+                if nbytes < UDP_CONN_RESPONSE_LEN {
+                    return Err(BitterMistake::new(
+                        "received message too small for connection handshake",
+                    ));
+                }
+
+                let action = recv_buf.get_u32();
+                let recv_tx_id = recv_buf.get_u32();
+                let conn_id = recv_buf.get_u64();
+
+                if action != UDP_ACTION_CONNECT {
+                    return Err(BitterMistake::new(
+                        "wrong action received in response to connection",
+                    ));
+                }
+
+                if recv_tx_id != tx_id {
+                    return Err(BitterMistake::new("transaction id mismatch"));
+                }
+
+                return Ok(UdpConn(conn_id));
+            }
+            Ok(Err(e)) => return Err(BitterMistake::new_err(e)),
+            Err(_) => continue,
+        };
+    }
+    Err(BitterMistake::new("timed out trying to connect"))
+}
+
+async fn udp_send_announce<T: tokio::net::ToSocketAddrs>(
+    socket: &UdpSocket,
+    url: T,
+    conn: &UdpConn,
+    req: &AnnounceRequest,
+) -> BitterResult<Vec<Peer>> {
+    for i in 0..5 {
+        let mut send_buf = BytesMut::with_capacity(UDP_ANNOUNCE_REQUEST_LEN);
+        let tx_id = rand::random::<u32>();
+        send_buf.put_u64(conn.0);
+        send_buf.put_u32(UDP_ACTION_ANNOUNCE);
+        send_buf.put_u32(tx_id);
+        send_buf.put_slice(&req.info_hash);
+        send_buf.put_slice(&req.peer_id);
+        send_buf.put_u64(req.downloaded);
+        send_buf.put_u64(req.left);
+        send_buf.put_u64(req.uploaded);
+        send_buf.put_u32(req.event.as_u32());
+        send_buf.put_u32(0); // IP address default
+        send_buf.put_u32(0x0dcc59a8); // key, dunno what it's for
+        send_buf.put_i32(req.numwant);
+        send_buf.put_u16(req.port);
+
+        let mut write_len = send_buf.len();
+        while write_len > 0 {
+            write_len -= socket
+                .send_to(&send_buf, &url)
+                .await
+                .map_err(BitterMistake::new_err)?;
+        }
+        let mut recv_buf = BytesMut::with_capacity(UDP_ANNOUNCE_RESPONSE_MAX_LEN);
+
+        match timeout(
+            Duration::from_secs(15 * (u64::pow(2, i))),
+            socket.recv_buf_from(&mut recv_buf),
+        )
+        .await
+        {
+            Ok(Ok((nbytes, _addr))) => {
+                if nbytes < UDP_ANNOUNCE_RESPONSE_MIN_LEN {
+                    return Err(BitterMistake::new(
+                        "received message too small for announce response",
+                    ));
+                }
+                debug!(ini_len=recv_buf.remaining(), nbytes);
+
+                let action = recv_buf.get_u32();
+                let recv_tx_id = recv_buf.get_u32();
+                let interval = recv_buf.get_u32();
+                let leechers = recv_buf.get_u32();
+                let seeders = recv_buf.get_u32();
+                debug!(remaining=recv_buf.remaining());
+                let mut peers = Vec::with_capacity(recv_buf.remaining() / 6);
+
+                while recv_buf.remaining() >= 6 {
+                    let addr = recv_buf.get_u32();
+                    let port = recv_buf.get_u16();
+
+                    peers.push(Peer {
+                        addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from(addr), port)),
+                        peer_id: None,
+                    });
+                }
+
+                if recv_buf.remaining() > 0 {
+                    return Err(BitterMistake::new("trailing bytes in announce packet"));
+                }
+
+                if action != UDP_ACTION_ANNOUNCE {
+                    return Err(BitterMistake::new(
+                        "wrong action received in response to announce",
+                    ));
+                }
+
+                if recv_tx_id != tx_id {
+                    return Err(BitterMistake::new("transaction id mismatch"));
+                }
+
+                return Ok(peers);
+            }
+            Ok(Err(e)) => return Err(BitterMistake::new_err(e)),
+            Err(_) => continue,
+        };
+    }
+    Err(BitterMistake::new("timed out trying to announce"))
+}
+
+async fn udp_announce(
+    socket: &UdpSocket,
+    url: &str,
+    req: &AnnounceRequest,
+) -> BitterResult<Vec<Peer>> {
+    let authority = Url::parse(url)
+        .map_err(BitterMistake::new_err)?
+        .socket_addrs(|| None)
+        .map_err(BitterMistake::new_err)?
+        .pop()
+        .ok_or(BitterMistake::new_owned(format!("couldn't resolve url {url} to socket address")))?;
+        
+    let conn = udp_connect(socket, authority).await?;
+    udp_send_announce(socket, authority, &conn, req).await
+}
+
 #[derive(Serialize)]
 struct AnnounceRequest {
     info_hash: BitterHash,
@@ -156,6 +354,8 @@ struct AnnounceRequest {
     downloaded: u64,
     left: u64,
     event: AnnounceEvent,
+    numwant: i32,
+    compact: bool
 }
 
 enum AnnounceEvent {
@@ -163,6 +363,17 @@ enum AnnounceEvent {
     Completed,
     Stopped,
     Empty,
+}
+
+impl AnnounceEvent {
+    fn as_u32(&self) -> u32 {
+        match self {
+            AnnounceEvent::Empty => 0,
+            AnnounceEvent::Completed => 1,
+            AnnounceEvent::Started => 2,
+            AnnounceEvent::Stopped => 3,
+        }
+    }
 }
 
 impl fmt::Display for AnnounceEvent {
