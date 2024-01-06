@@ -126,7 +126,7 @@ pub fn bdecode_int(buf: &mut Cursor<&[u8]>) -> BitterResult<i64> {
 }
 
 pub fn bdecode_dict<'a>(buf: &mut Cursor<&'a [u8]>) -> BitterResult<BencodedDict<'a>> {
-    let buf_ptr: &[u8] = buf.get_ref();
+    let start_ptr  = buf.stream_position().unwrap() as usize;
 
     if !first_char_matches(buf, b'd') {
         return Err(BitterMistake::new("not a dict"));
@@ -135,7 +135,8 @@ pub fn bdecode_dict<'a>(buf: &mut Cursor<&'a [u8]>) -> BitterResult<BencodedDict
 
     while buf.stream_position().unwrap() < buf.get_ref().len() as u64 {
         if first_char_matches(buf, b'e') {
-            return Ok(BencodedDict(map, buf_ptr));
+            let end_ptr = buf.stream_position().unwrap() as usize;
+            return Ok(BencodedDict(map, &buf.get_ref()[start_ptr..end_ptr]));
         }
         let key = bdecode_str(buf)?;
         let value = bdecode_any(buf)?;
