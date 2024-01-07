@@ -81,6 +81,10 @@ impl Accounting {
         self.downloaded[pieceno].swap(true, Ordering::Acquire)
     }
 
+    pub fn mark_not_reserved(&self, pieceno: usize) -> bool {
+        self.reserved[pieceno].swap(false, Ordering::Acquire)
+    }
+
     pub fn piece_is_reserved(&self, pieceno: usize) -> bool {
         self.reserved[pieceno].load(Ordering::Acquire)
     }

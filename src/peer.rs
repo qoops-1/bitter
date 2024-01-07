@@ -44,7 +44,7 @@ pub struct PeerHandler<'a, T> {
 }
 
 struct ProgressTracker {
-    pcs: Vec<PieceInProgress>,
+    pub pcs: Vec<PieceInProgress>,
     chunk_len: u32,
     piece_len: u32,
     total_len: u64,
@@ -90,9 +90,10 @@ pub async fn run_peer_handler<T: Unpin + AsyncRead + AsyncWrite>(
             // TODO: ("check peer id")
         }
     }
-    handler.run(&mut conn).await?;
+    let res = handler.run(&mut conn).await;
     conn.close().await;
-    Ok(())
+
+    res
 }
 
 impl ProgressTracker {
@@ -500,6 +501,15 @@ where
         }
 
         chunk_len
+    }
+}
+
+impl<'a, T> Drop for PeerHandler<'a, T> {
+    fn drop(&mut self) {
+        for p in &self.ptracker.pcs {
+            assert!(self.acct.piece_is_downloaded(p.index as usize));
+            self.acct.mark_not_reserved(p.index as usize);
+        }
     }
 }
 

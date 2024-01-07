@@ -5,7 +5,7 @@ use crate::{
 use bit_vec::BitVec;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tracing::trace;
+use tracing::{info, trace};
 
 use crate::utils::BitterResult;
 
@@ -15,7 +15,7 @@ pub const DEFAULT_BUF_SIZE: usize = MAX_PACKET_LEN as usize;
 const MSG_LEN_LEN: usize = 4;
 const INCORRECT_LEN_ERROR: &str = "Packet has incorrect size";
 // Handshake msg constants
-const BITTORRENT_PROTO: &[u8] = "BitTorrent protocol".as_bytes();
+const BITTORRENT_PROTO: &[u8] = b"BitTorrent protocol";
 
 // Message lengths
 const BITTORRENT_PROTO_LEN: usize = 19;
@@ -309,7 +309,10 @@ where
     }
 
     pub async fn close(&mut self) {
-        let _ = self.inner.shutdown().await;
+        let res = self.inner.shutdown().await;
+        if let Err(e) = res {
+            info!(event = "socket_close_error", error = e.to_string());
+        }
     }
 }
 
