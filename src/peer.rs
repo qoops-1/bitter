@@ -507,7 +507,7 @@ where
 impl<'a, T> Drop for PeerHandler<'a, T> {
     fn drop(&mut self) {
         for p in &self.ptracker.pcs {
-            assert!(self.acct.piece_is_downloaded(p.index as usize));
+            assert!(!self.acct.piece_is_downloaded(p.index as usize));
             self.acct.mark_not_reserved(p.index as usize);
         }
     }

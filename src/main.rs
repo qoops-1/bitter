@@ -27,7 +27,7 @@ fn main() {
     };
 
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(LevelFilter::DEBUG)
+        .with_max_level(LevelFilter::INFO)
         .finish();
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
