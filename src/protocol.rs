@@ -316,7 +316,7 @@ where
     }
 }
 
-fn parse_have<'a>(mut buf: Bytes) -> BitterResult<Packet> {
+fn parse_have(mut buf: Bytes) -> BitterResult<Packet> {
     if buf.remaining() != 4 {
         return Err(BitterMistake::new(INCORRECT_LEN_ERROR));
     }
@@ -324,11 +324,11 @@ fn parse_have<'a>(mut buf: Bytes) -> BitterResult<Packet> {
     Ok(Packet::Have(pieceno))
 }
 
-fn parse_bitfield<'a>(buf: Bytes) -> BitterResult<Packet> {
+fn parse_bitfield(buf: Bytes) -> BitterResult<Packet> {
     Ok(Packet::Bitfield(BitVec::from_bytes(&buf)))
 }
 
-fn parse_request<'a>(buf: Bytes) -> BitterResult<Packet> {
+fn parse_request(buf: Bytes) -> BitterResult<Packet> {
     parse_request_internal(buf).map(|(index, begin, length)| Packet::Request {
         index,
         begin,
@@ -336,7 +336,7 @@ fn parse_request<'a>(buf: Bytes) -> BitterResult<Packet> {
     })
 }
 
-fn parse_piece<'a>(mut buf: Bytes) -> BitterResult<Packet> {
+fn parse_piece(mut buf: Bytes) -> BitterResult<Packet> {
     if buf.remaining() < MSG_MIN_LEN_PIECE - MSG_TYPE_LEN {
         return Err(BitterMistake::new(INCORRECT_LEN_ERROR));
     }
@@ -350,7 +350,7 @@ fn parse_piece<'a>(mut buf: Bytes) -> BitterResult<Packet> {
     })
 }
 
-fn parse_cancel<'a>(buf: Bytes) -> BitterResult<Packet> {
+fn parse_cancel(buf: Bytes) -> BitterResult<Packet> {
     parse_request_internal(buf).map(|(index, begin, length)| Packet::Cancel {
         index,
         begin,

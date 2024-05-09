@@ -7,12 +7,12 @@ edition = "2021"
 
 [dependencies]
 bit-vec = "0.6.3"
-bytes = "1.5.0"
+bytes = "1.6.0"
 rand = "0.8.5"
-reqwest = "0.11.22"
+reqwest = "0.12.4"
 serde = { version = "1.0.193", features = ["derive"] }
 sha1 = "0.10.5"
-tokio = { version = "1.34.0", features = ["full"] }
+tokio = { version = "1.37.0", features = ["full"] }
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
 
