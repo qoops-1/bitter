@@ -9,10 +9,7 @@ use bytes::{Buf, BufMut, BytesMut};
 use rand::{seq::SliceRandom, rng};
 use reqwest::{Client, Url};
 use serde::Serialize;
-use tokio::{
-    net::UdpSocket,
-    time::timeout,
-};
+use tokio::{net::UdpSocket, time::timeout};
 use tracing::debug;
 
 use crate::{
@@ -67,7 +64,12 @@ pub struct Tracker {
     trackers: Vec<Vec<String>>,
 }
 impl Tracker {
-    pub async fn new(meta: &Metainfo, peer_id: PeerId, port: u16, total_len: u64) -> BitterResult<Self> {
+    pub async fn new(
+        meta: &Metainfo,
+        peer_id: PeerId,
+        port: u16,
+        total_len: u64,
+    ) -> BitterResult<Self> {
         let http_client = Client::new();
         let udp_socket = UdpSocket::bind("0.0.0.0:0")
             .await
@@ -111,7 +113,11 @@ impl Tracker {
         for url in &mut iter {
             match self.send_announce_request(url, &req).await {
                 Ok(peers_resp) => {
-                    debug!(event="received_peers", tracker=url, num=peers_resp.len());
+                    debug!(
+                        event = "received_peers",
+                        tracker = url,
+                        num = peers_resp.len()
+                    );
                     self.move_up_current(iter.tier, iter.tracker_pos);
                     return Ok(peers_resp);
                 }
@@ -189,8 +195,10 @@ const UDP_ANNOUNCE_RESPONSE_MAX_LEN: usize = UDP_ANNOUNCE_RESPONSE_MIN_LEN + 6 *
 const UDP_ACTION_CONNECT: u32 = 0;
 const UDP_ACTION_ANNOUNCE: u32 = 1;
 
-async fn udp_connect<T: tokio::net::ToSocketAddrs>(socket: &UdpSocket, url: T) -> BitterResult<UdpConn> {
-    
+async fn udp_connect<T: tokio::net::ToSocketAddrs>(
+    socket: &UdpSocket,
+    url: T,
+) -> BitterResult<UdpConn> {
     for i in 0..5 {
         let mut send_buf = BytesMut::new();
         let tx_id = rand::random::<u32>();
@@ -261,7 +269,7 @@ async fn udp_send_announce<T: tokio::net::ToSocketAddrs>(
         send_buf.put_u64(req.uploaded);
         send_buf.put_u32(req.event.as_u32());
         send_buf.put_u32(0); // IP address default
-        send_buf.put_u32(0x0dcc59a8); // key, dunno what it's for
+        send_buf.put_u32(0); // key, dunno what it's for
         send_buf.put_i32(req.numwant);
         send_buf.put_u16(req.port);
 
@@ -286,14 +294,14 @@ async fn udp_send_announce<T: tokio::net::ToSocketAddrs>(
                         "received message too small for announce response",
                     ));
                 }
-                debug!(ini_len=recv_buf.remaining(), nbytes);
+                debug!(ini_len = recv_buf.remaining(), nbytes);
 
                 let action = recv_buf.get_u32();
                 let recv_tx_id = recv_buf.get_u32();
                 let interval = recv_buf.get_u32();
                 let leechers = recv_buf.get_u32();
                 let seeders = recv_buf.get_u32();
-                debug!(remaining=recv_buf.remaining());
+                debug!(remaining = recv_buf.remaining());
                 let mut peers = Vec::with_capacity(recv_buf.remaining() / 6);
 
                 while recv_buf.remaining() >= 6 {
@@ -339,8 +347,10 @@ async fn udp_announce(
         .socket_addrs(|| None)
         .map_err(BitterMistake::new_err)?
         .pop()
-        .ok_or(BitterMistake::new_owned(format!("couldn't resolve url {url} to socket address")))?;
-        
+        .ok_or(BitterMistake::new_owned(format!(
+            "couldn't resolve url {url} to socket address"
+        )))?;
+
     let conn = udp_connect(socket, authority).await?;
     udp_send_announce(socket, authority, &conn, req).await
 }
@@ -355,7 +365,7 @@ struct AnnounceRequest {
     left: u64,
     event: AnnounceEvent,
     numwant: i32,
-    compact: bool
+    compact: bool,
 }
 
 enum AnnounceEvent {
