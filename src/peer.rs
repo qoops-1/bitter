@@ -204,7 +204,7 @@ impl<'a, T> PeerHandler<'a, T>
 where
     T: Unpin + AsyncRead + AsyncWrite,
 {
-    pub fn new(params: &'a DownloadParams, acct: Accounting) -> PeerHandler<T> {
+    pub fn new(params: &'a DownloadParams, acct: Accounting) -> PeerHandler<'a, T> {
         let ptracker = ProgressTracker {
             pcs: Vec::new(),
             chunk_len: params.req_piece_len,
@@ -409,8 +409,8 @@ where
         Ok(())
     }
 
-    fn verify_piece<'b>(&self, index: u32, begin: u32, length: u32) -> BitterResult<()> {
-        let plen = self.params.req_piece_len as u32;
+    fn verify_piece(&self, index: u32, begin: u32, length: u32) -> BitterResult<()> {
+        let plen = self.params.req_piece_len;
 
         if index >= self.params.metainfo.pieces.len() as u32 {
             return Err(BitterMistake::new("Piece index out of bounds"));
@@ -504,7 +504,7 @@ where
     }
 }
 
-impl<'a, T> Drop for PeerHandler<'a, T> {
+impl<T> Drop for PeerHandler<'_, T> {
     fn drop(&mut self) {
         for p in &self.ptracker.pcs {
             assert!(!self.acct.piece_is_downloaded(p.index as usize));
@@ -531,7 +531,7 @@ async fn read_chunk(
             .map_err(BitterMistake::new_err)?;
 
         if fm.offset != 0 {
-            file.seek(SeekFrom::Start(fm.offset.into()))
+            file.seek(SeekFrom::Start(fm.offset))
                 .await
                 .map_err(BitterMistake::new_err)?;
             fm.offset = 0;

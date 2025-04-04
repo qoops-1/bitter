@@ -195,7 +195,8 @@ fn first_char_matches(buf: &mut Cursor<&[u8]>, c: u8) -> bool {
         // I don't care about int64 overflow
         buf.seek(SeekFrom::Current(1)).unwrap();
     }
-    return have_match;
+
+    have_match
 }
 
 #[cfg(test)]

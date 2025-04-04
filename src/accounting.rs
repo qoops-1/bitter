@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use bit_vec::BitVec;
-use rand::{seq::SliceRandom, thread_rng, Rng};
+use rand::{seq::SliceRandom, rng};
 use tracing::debug;
 
 #[derive(Clone)]
@@ -29,7 +29,7 @@ impl Accounting {
     }
 
     pub fn init_available(&mut self, available: BitVec) {
-        let mut rng = thread_rng();
+        let mut rng = rng();
         let mut avail_pieces: Vec<usize> = available
             .iter()
             .enumerate()
@@ -42,8 +42,7 @@ impl Accounting {
     }
 
     pub fn mark_available(&mut self, pieceno: usize) {
-        let mut rng = thread_rng();
-        let spot: usize = rng.gen();
+        let spot: usize = rand::random_range(..=self.available.len());
         if spot == self.available.len() {
             self.available.push(pieceno);
             return;

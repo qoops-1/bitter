@@ -1,5 +1,5 @@
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
+use rand::distr::Alphanumeric;
+use rand::{rng, Rng};
 use tracing::debug;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
@@ -32,7 +32,7 @@ pub struct Downloader {
 
 impl Downloader {
     fn new(settings: Settings) -> Downloader {
-        let id: String = thread_rng()
+        let id: String = rng()
             .sample_iter(&Alphanumeric)
             .take(20)
             .map(char::from)

@@ -6,7 +6,7 @@ use std::{
 };
 
 use bytes::{Buf, BufMut, BytesMut};
-use rand::{seq::SliceRandom, thread_rng};
+use rand::{seq::SliceRandom, rng};
 use reqwest::{Client, Url};
 use serde::Serialize;
 use tokio::{
@@ -72,7 +72,7 @@ impl Tracker {
         let udp_socket = UdpSocket::bind("0.0.0.0:0")
             .await
             .map_err(BitterMistake::new_err)?;
-        let mut rng = thread_rng();
+        let mut rng = rng();
 
         let mut trackers = Vec::with_capacity(meta.announce_list.len());
         for tier in meta.announce_list.iter() {
