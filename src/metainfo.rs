@@ -209,7 +209,7 @@ mod tests {
 
     use crate::bencoding::bdecode;
 
-    use super::{Metainfo, MetainfoInfo, MetainfoFile, BitterHash};
+    use super::{BitterHash, Metainfo, MetainfoFile, MetainfoInfo};
 
     #[test]
     fn art2_metainfo_parsing() {
@@ -221,19 +221,29 @@ mod tests {
         let parsed: Metainfo = bdecode(&bytes).unwrap();
 
         let expected = Metainfo {
-            announce_list: vec![
-                vec![String::from("https://example.com/")],
-            ],
+            announce_list: vec![vec![String::from("https://example.com/")]],
             info: MetainfoInfo {
                 name: String::from("art2.jpg"),
                 piece_length: 32768,
-                pieces: vec![BitterHash([11, 6, 122, 29, 62, 90, 105, 71, 87, 52, 246, 26, 246, 255, 28, 164, 23, 78, 227, 69]), BitterHash([6, 46, 144, 5, 99, 157, 75, 107, 219, 64, 75, 97, 99, 64, 211, 252, 187, 93, 252, 181])],
-                files: vec![MetainfoFile { 
+                pieces: vec![
+                    BitterHash([
+                        11, 6, 122, 29, 62, 90, 105, 71, 87, 52, 246, 26, 246, 255, 28, 164, 23,
+                        78, 227, 69,
+                    ]),
+                    BitterHash([
+                        6, 46, 144, 5, 99, 157, 75, 107, 219, 64, 75, 97, 99, 64, 211, 252, 187,
+                        93, 252, 181,
+                    ]),
+                ],
+                files: vec![MetainfoFile {
                     length: 43697,
                     path: PathBuf::from("art2.jpg"),
                 }],
-                hash: BitterHash([0x24, 0x95, 0xde, 0x6f, 0x84, 0xf0, 0xd0, 0x5a, 0x6c, 0x68, 0x7c, 0x3a, 0x30, 0xe2, 0xf7, 0xfd, 0x3d, 0x33, 0x52, 0x99])
-            }
+                hash: BitterHash([
+                    0x24, 0x95, 0xde, 0x6f, 0x84, 0xf0, 0xd0, 0x5a, 0x6c, 0x68, 0x7c, 0x3a, 0x30,
+                    0xe2, 0xf7, 0xfd, 0x3d, 0x33, 0x52, 0x99,
+                ]),
+            },
         };
         assert_eq!(parsed, expected);
     }

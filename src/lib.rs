@@ -2,6 +2,7 @@ use std::{
     fs::{self, DirBuilder, File},
     net::IpAddr,
     os::unix::fs::DirBuilderExt,
+    path::PathBuf,
 };
 
 use bencoding::*;
@@ -25,7 +26,7 @@ pub struct Settings {
     pub req_piece_len: u32,
 }
 
-pub fn run(filename: &str, settings: Settings) -> BitterResult<()> {
+pub fn run(filename: PathBuf, settings: Settings) -> BitterResult<()> {
     let metafile = fs::read(filename).map_err(BitterMistake::new_err)?;
     let parsed_metainfo: Metainfo = bdecode(&metafile).map_err(|e| {
         BitterMistake::new_owned(format!("Error parsing metadata file: {}", e.to_string()))

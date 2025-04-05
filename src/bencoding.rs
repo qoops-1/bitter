@@ -126,7 +126,7 @@ pub fn bdecode_int(buf: &mut Cursor<&[u8]>) -> BitterResult<i64> {
 }
 
 pub fn bdecode_dict<'a>(buf: &mut Cursor<&'a [u8]>) -> BitterResult<BencodedDict<'a>> {
-    let start_ptr  = buf.stream_position().unwrap() as usize;
+    let start_ptr = buf.stream_position().unwrap() as usize;
 
     if !first_char_matches(buf, b'd') {
         return Err(BitterMistake::new("not a dict"));

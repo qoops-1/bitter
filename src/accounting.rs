@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use bit_vec::BitVec;
-use rand::{seq::SliceRandom, rng};
+use rand::{rng, seq::SliceRandom};
 use tracing::debug;
 
 #[derive(Clone)]

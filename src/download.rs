@@ -1,10 +1,10 @@
 use rand::distr::Alphanumeric;
 use rand::{rng, Rng};
-use tracing::debug;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::task::JoinSet;
+use tracing::debug;
 
 use crate::accounting::Accounting;
 use crate::metainfo::PeerId;
@@ -58,7 +58,6 @@ impl Downloader {
 
         let mut tracker = Tracker::new(&metainfo, peer_id, self.settings.port, total_len).await?;
         let announce_resp = tracker.announce_start().await?;
-        
 
         let params = DownloadParams {
             peer_id,

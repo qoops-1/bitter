@@ -6,7 +6,7 @@ use std::{
 };
 
 use bytes::{Buf, BufMut, BytesMut};
-use rand::{seq::SliceRandom, rng};
+use rand::{rng, seq::SliceRandom};
 use reqwest::{Client, Url};
 use serde::Serialize;
 use tokio::{net::UdpSocket, time::timeout};
