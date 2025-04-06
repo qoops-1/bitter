@@ -8,7 +8,7 @@ use bitter::{
     utils::roundup_div,
 };
 use bytes::Bytes;
-use std::{fs, sync::Arc};
+use std::{fs, path::PathBuf, sync::Arc};
 use tempdir::TempDir;
 use tokio::{self, io::duplex};
 
@@ -30,6 +30,7 @@ async fn single_peer_basic_download() {
         req_piece_len,
         total_len,
         start_peer_choked: true,
+        output_dir: PathBuf::new(),
     };
     let (socket1, socket2) = duplex(usize::pow(2, 10));
 

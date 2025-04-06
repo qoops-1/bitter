@@ -65,9 +65,14 @@ impl Downloader {
             req_piece_len: self.settings.req_piece_len,
             total_len,
             start_peer_choked: true,
+            output_dir: self.settings.output_dir.clone(),
         };
 
         self.peers.extend(announce_resp);
+
+        let server = TcpListener::bind((self.settings.ip, self.settings.port))
+            .await
+            .map_err(BitterMistake::new_err)?;
 
         let mut jset = JoinSet::new();
 
@@ -78,10 +83,6 @@ impl Downloader {
             }
             jset.spawn(run_new_peer_conn(cur_params, p.clone(), acct.clone()));
         }
-
-        let server = TcpListener::bind((self.settings.ip, self.settings.port))
-            .await
-            .map_err(BitterMistake::new_err)?;
 
         loop {
             select! {

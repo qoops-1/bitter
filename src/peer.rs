@@ -1,4 +1,4 @@
-use std::{io::SeekFrom, marker::PhantomData, path::Path, sync::Arc, time::Duration};
+use std::{io::SeekFrom, marker::PhantomData, path::{Path, PathBuf}, sync::Arc, time::Duration};
 
 use bit_vec::BitVec;
 use bytes::{Buf, Bytes, BytesMut};
@@ -28,6 +28,7 @@ pub struct DownloadParams {
     pub req_piece_len: u32,
     pub total_len: u64,
     pub start_peer_choked: bool,
+    pub output_dir: PathBuf,
 }
 
 pub struct PeerHandler<'a, T> {
@@ -384,6 +385,7 @@ where
                 self.params.metainfo.piece_length,
                 &full_piece,
                 &self.params.metainfo.files,
+                &self.params.output_dir
             )
             .await?;
             self.acct.mark_downloaded(index as usize);
@@ -556,6 +558,7 @@ async fn save_piece(
     piece_len: u32,
     chunks: &Vec<Bytes>,
     files: &Vec<MetainfoFile>,
+    output_dir: &Path,
 ) -> BitterResult<()> {
     let length = chunks.iter().map(|c| c.remaining() as u32).sum();
     let mut fm = match_span_to_files(index, 0, length, piece_len, files);
@@ -566,7 +569,7 @@ async fn save_piece(
             .write(true)
             .create(true)
             .mode(0o755)
-            .open(path)
+            .open(output_dir.join(path))
             .await
             .map_err(BitterMistake::new_err)?;
 
@@ -793,6 +796,7 @@ mod tests {
             plen as u32,
             &vec![Bytes::from(ones_piece.clone())],
             &files,
+            &PathBuf::new(),
         )
         .await
         .unwrap();
@@ -807,7 +811,7 @@ mod tests {
             "file should be the same as the submitted piece"
         );
 
-        save_piece(1, plen as u32, &vec![Bytes::from(h_piece.clone())], &files)
+        save_piece(1, plen as u32, &vec![Bytes::from(h_piece.clone())], &files, &PathBuf::new())
             .await
             .unwrap();
 
@@ -849,6 +853,7 @@ mod tests {
                 Bytes::copy_from_slice(ones_piece3.clone()),
             ],
             &files,
+            &PathBuf::new()
         )
         .await
         .unwrap();
@@ -897,7 +902,7 @@ mod tests {
         let mut received = ones.clone();
         received.append(&mut twos.clone());
         received.append(&mut threes.clone());
-        save_piece(0, plen as u32, &vec![Bytes::from(received)], &files)
+        save_piece(0, plen as u32, &vec![Bytes::from(received)], &files, &PathBuf::new())
             .await
             .unwrap();
         let mut written_file1 = File::open(&file1).await.unwrap();
@@ -970,6 +975,7 @@ mod tests {
                 Bytes::from(chunk3),
             ],
             &files,
+            &PathBuf::new()
         )
         .await
         .unwrap();

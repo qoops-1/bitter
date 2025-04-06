@@ -24,12 +24,13 @@ pub struct Settings {
     pub port: u16,
     pub ip: IpAddr,
     pub req_piece_len: u32,
+    pub output_dir: PathBuf,
 }
 
 pub fn run(filename: PathBuf, settings: Settings) -> BitterResult<()> {
     let metafile = fs::read(filename).map_err(BitterMistake::new_err)?;
     let parsed_metainfo: Metainfo = bdecode(&metafile).map_err(|e| {
-        BitterMistake::new_owned(format!("Error parsing metadata file: {}", e.to_string()))
+        BitterMistake::new_owned(format!("Error parsing metadata file: {}", e))
     })?;
 
     // setup_dirs(&parsed_metainfo.info.files)?;
