@@ -1,10 +1,11 @@
 use rand::distr::Alphanumeric;
 use rand::{rng, Rng};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::task::JoinSet;
-use tracing::debug;
+use tracing::{debug, error, info};
 
 use crate::accounting::Accounting;
 use crate::metainfo::PeerId;
@@ -19,9 +20,9 @@ use crate::{
 const OPTIMISITIC_UNCHOKE_NUM: usize = 6;
 
 pub fn download(metainfo: Metainfo, settings: Settings) -> BitterResult<()> {
-    let mut sched = Downloader::new(settings);
+    let mut downldr = Downloader::new(settings);
 
-    sched.run(metainfo)
+    downldr.run(metainfo)
 }
 
 pub struct Downloader {
@@ -88,15 +89,22 @@ impl Downloader {
             select! {
                 res = jset.join_next() => {
                     match res {
-                        Some(Ok(Ok(()))) | None => {
-                            debug!("peer_exited");
+                        Some(r) => {
+                            match r {
+                                Ok(Ok(())) => debug!("peer_exit"),
+                                Err(e) => error!("peer_exit_error {}", e),
+                                Ok(Err(e)) => error!("peer_exit_error {}", e),
+                            }
+                            if total_pieces == acct.down_cnt.load(Ordering::Acquire) {
+                                if !self.settings.keep_going {
+                                    debug!("download done");
+                                    break;
+                                }
+                            }
+                        }
+                        None => {
+                            debug!("no_more_peers");
                             break;
-                        }
-                        Some(Err(e)) => {
-                            eprintln!("peer exited with error: {}", e);
-                        }
-                        Some(Ok(Err(e))) => {
-                            eprintln!("peer exited with error: {}", e);
                         }
                 }}
                 res = server.accept() => {

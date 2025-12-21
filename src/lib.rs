@@ -25,6 +25,7 @@ pub struct Settings {
     pub ip: IpAddr,
     pub req_piece_len: u32,
     pub output_dir: PathBuf,
+    pub keep_going: bool,
 }
 
 pub fn run(filename: PathBuf, settings: Settings) -> BitterResult<()> {

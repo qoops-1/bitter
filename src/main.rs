@@ -14,17 +14,24 @@ const REQUEST_PIECE_LEN: u32 = u32::pow(2, 14); // 16 KB
 struct Args {
     #[arg(short, long, default_value_t = LevelFilter::INFO)]
     log_level: LevelFilter,
+
+    // Output directory for downloaded files
     #[arg(short,long)]
-    output_dir: Option<PathBuf>,
+    output: Option<PathBuf>,
+
+    // Don't exit and start seeding after the file is downloaded
+    #[arg(short, long, default_value_t = false)]
+    keep_going: bool,
+    
     metainfo: PathBuf,
 }
 
 fn main() {
     let args = Args::parse();
 
-    let output_dir = args.output_dir.unwrap_or(PathBuf::from("./"));
+    let output_dir = args.output.unwrap_or(PathBuf::from("./"));
     if !output_dir.is_dir() {
-        eprintln!("failed to verify that {} is a directory", output_dir.to_string_lossy());
+        eprintln!("{} is not a directory", output_dir.to_string_lossy());
         exit(1);
     }
     let settings = Settings {
@@ -32,6 +39,7 @@ fn main() {
         ip: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
         req_piece_len: REQUEST_PIECE_LEN,
         output_dir,
+        keep_going: args.keep_going,
     };
 
     let subscriber = FmtSubscriber::builder()

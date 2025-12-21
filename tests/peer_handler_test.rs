@@ -8,7 +8,7 @@ use bitter::{
     utils::roundup_div,
 };
 use bytes::Bytes;
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{fs, path::PathBuf, sync::{atomic::Ordering, Arc}};
 use tempdir::TempDir;
 use tokio::{self, io::duplex};
 
@@ -33,10 +33,10 @@ async fn single_peer_basic_download() {
         output_dir: PathBuf::new(),
     };
     let (socket1, socket2) = duplex(usize::pow(2, 10));
-
+    let acct = Accounting::new(params.metainfo.pieces.len());
+    let acct_clone = acct.clone();
     let jhandle = tokio::spawn(async move {
-        let acct = Accounting::new(params.metainfo.pieces.len());
-        run_peer_handler(params, acct, socket2).await.unwrap();
+        run_peer_handler(params, acct_clone, socket2).await.unwrap();
     });
 
     let mut conn = TcpConn::new(socket1, DEFAULT_BUF_SIZE);
@@ -84,6 +84,7 @@ async fn single_peer_basic_download() {
     jhandle.await.unwrap();
 
     let downloaded_file = fs::read(&metainfo.info.files[0].path).unwrap();
+    assert_eq!(pieces.len(), acct.down_cnt.load(Ordering::SeqCst));
     assert_eq!(file, downloaded_file);
     drop(tempdir);
 }
