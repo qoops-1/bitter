@@ -20,17 +20,12 @@ use crate::{
 
 struct AnnounceListIter<'a> {
     trackers: &'a Vec<Vec<String>>,
-    tier: usize,
-    tracker_pos: usize,
+    pos: Option<(usize, usize)>,
 }
 
 impl<'a> AnnounceListIter<'a> {
     fn new(trackers: &'a Vec<Vec<String>>) -> AnnounceListIter<'a> {
-        AnnounceListIter {
-            trackers,
-            tier: 0,
-            tracker_pos: 0,
-        }
+        AnnounceListIter {trackers, pos: None}
     }
 }
 
@@ -38,20 +33,19 @@ impl<'a> Iterator for AnnounceListIter<'a> {
     type Item = &'a String;
 
     fn next(&mut self) -> Option<Self::Item> {
+        let (tier, pos) = self.pos.map_or((0,0), |(t, p)| {
+         if p < self.trackers[t].len() - 1 {
+             (t, p + 1)
+         } else {
+             (t + 1, 0)
+         }
+        });
+        self.pos = Some((tier, pos));
         let res: Option<Self::Item> = self
             .trackers
-            .get(self.tier)
-            .and_then(|t| t.get(self.tracker_pos));
-
-        if res.is_some() {
-            if self.tracker_pos >= self.trackers[self.tier].len() - 1 {
-                self.tier += 1;
-                self.tracker_pos = 0;
-            } else {
-                self.tracker_pos += 1;
-            }
-        }
-
+            .get(tier)
+            .and_then(|t| t.get(pos));
+        
         res
     }
 }
@@ -143,7 +137,7 @@ impl Tracker {
                         tracker = url,
                         num = peers_resp.len()
                     );
-                    self.move_up_current(iter.tier, iter.tracker_pos);
+                    self.move_up_current(iter.pos);
                     return Ok(peers_resp);
                 }
                 Err(e) => err = e,
@@ -174,11 +168,12 @@ impl Tracker {
         }
     }
 
-    fn move_up_current(&mut self, tier: usize, tracker_pos: usize) {
-        if tracker_pos == 0 {
+    fn move_up_current(&mut self, iter_pos: Option<(usize, usize)>) {
+        let (tier, pos) = iter_pos.unwrap_or((0, 0));
+        if pos == 0 {
             return;
         }
-        self.trackers[tier].swap(0, tracker_pos);
+        self.trackers[tier].swap(0, pos);
     }
 }
 
