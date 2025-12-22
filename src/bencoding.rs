@@ -26,7 +26,7 @@ impl<'a> BencodedValue<'a> {
         }
     }
 
-    pub fn try_into_dict(&self) -> BitterResult<&BencodedDict> {
+    pub fn try_into_dict(&self) -> BitterResult<&BencodedDict<'_>> {
         match self {
             BencodedValue::BencodedDict(d) => Ok(d),
             _ => Err(BitterMistake::new("not a dict")),
@@ -61,7 +61,7 @@ impl<'a> BencodedValue<'a> {
         }
     }
 
-    pub fn try_into_list(&self) -> BitterResult<&Vec<BencodedValue>> {
+    pub fn try_into_list(&self) -> BitterResult<&Vec<BencodedValue<'_>>> {
         match self {
             BencodedValue::BencodedList(l) => Ok(l),
             _ => Err(BitterMistake::new("not a list")),
@@ -73,13 +73,13 @@ impl<'a> BencodedValue<'a> {
 pub struct BencodedDict<'a>(HashMap<&'a [u8], BencodedValue<'a>>, &'a [u8]);
 
 impl<'a> BencodedDict<'a> {
-    pub fn get_val(&self, key: &str) -> BitterResult<&BencodedValue<'a>> {
+    pub fn get_val(&self, key: &str) -> BitterResult<&BencodedValue<'_>> {
         self.0
             .get(key.as_bytes())
             .ok_or(BitterMistake::new_owned(format!("key {key} not found")))
     }
 
-    pub fn get_start_ptr(&self) -> &'a [u8] {
+    pub fn get_start_ptr(&self) -> &[u8] {
         self.1
     }
 }

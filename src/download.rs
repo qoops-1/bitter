@@ -5,12 +5,12 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::task::JoinSet;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use crate::accounting::Accounting;
 use crate::metainfo::PeerId;
 use crate::peer::{run_peer_handler, PeerParams};
-use crate::tracker::{Peer, Tracker};
+use crate::tracker::{Peer, Tracker, AnnounceEvent};
 use crate::{
     metainfo::Metainfo,
     utils::{BitterMistake, BitterResult},
@@ -57,8 +57,8 @@ impl Downloader {
             .expect("peer_id contains more bytes than expected");
         let total_len: u64 = metainfo.info.files.iter().map(|f| f.length).sum();
 
-        let mut tracker = Tracker::new(&metainfo, peer_id, self.settings.port, total_len).await?;
-        let announce_resp = tracker.announce_start().await?;
+        let mut tracker = Tracker::new(&metainfo, &acct, peer_id, self.settings.port, total_len).await?;
+        let announce_resp = tracker.announce(AnnounceEvent::Started).await?;
 
         let params = PeerParams {
             peer_id,
@@ -95,7 +95,7 @@ impl Downloader {
                                 Err(e) => error!("peer_exit_error {}", e),
                                 Ok(Err(e)) => error!("peer_exit_error {}", e),
                             }
-                            if total_pieces == acct.down_cnt.load(Ordering::Acquire) {
+                            if total_pieces as u64 == acct.down_cnt.load(Ordering::Acquire) {
                                 if !self.settings.keep_going {
                                     debug!("download done");
                                     break;

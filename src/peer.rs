@@ -1,4 +1,4 @@
-use std::{io::SeekFrom, marker::PhantomData, path::{Path, PathBuf}, sync::Arc, time::Duration};
+use std::{io::SeekFrom, marker::PhantomData, path::{Path, PathBuf}, sync::{atomic::Ordering, Arc}, time::Duration};
 
 use bit_vec::BitVec;
 use bytes::{Buf, Bytes, BytesMut};
@@ -363,14 +363,17 @@ where
         )
         .await?;
 
-        self.stats.sent_pieces += 1;
-
+        
         conn.write(&Packet::Piece {
             index: piece_no,
             begin: chunk_offset,
             data: chunk,
         })
-        .await
+        .await?;
+
+        self.stats.sent_pieces += 1;
+        self.acct.up_cnt.fetch_add(1, Ordering::Release);
+        Ok(())
     }
 
     #[instrument(skip(self, data))]
@@ -389,8 +392,9 @@ where
             )
             .await?;
             self.acct.mark_downloaded(index as usize);
+            self.stats.recv_pieces += 1;
         }
-        self.stats.recv_pieces += 1;
+        
         Ok(())
     }
 
@@ -607,7 +611,7 @@ fn match_span_to_files(
     mut span_length: u32,
     piece_len: u32,
     files: &Vec<MetainfoFile>,
-) -> FileMapping {
+) -> FileMapping<'_> {
     let mut start_found = false;
     let mut bytes_seen = 0;
     let index: u64 = index.into();

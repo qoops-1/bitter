@@ -84,7 +84,7 @@ async fn single_peer_basic_download() {
     jhandle.await.unwrap();
 
     let downloaded_file = fs::read(&metainfo.info.files[0].path).unwrap();
-    assert_eq!(pieces.len(), acct.down_cnt.load(Ordering::SeqCst));
+    assert_eq!(pieces.len() as u64, acct.down_cnt.load(Ordering::SeqCst));
     assert_eq!(file, downloaded_file);
     drop(tempdir);
 }

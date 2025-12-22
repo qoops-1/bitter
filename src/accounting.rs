@@ -1,5 +1,5 @@
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 
@@ -13,7 +13,8 @@ pub struct Accounting {
     downloaded: Arc<Vec<AtomicBool>>,
     reserved: Arc<Vec<AtomicBool>>,
 
-    pub down_cnt: Arc<AtomicUsize>,
+    pub up_cnt: Arc<AtomicU64>,
+    pub down_cnt: Arc<AtomicU64>,
 }
 
 impl Accounting {
@@ -27,7 +28,8 @@ impl Accounting {
             available: Vec::with_capacity(0),
             downloaded: Arc::new(downloaded),
             reserved: Arc::new(reserved),
-            down_cnt: Arc::new(AtomicUsize::new(0)),
+            up_cnt: Arc::new(AtomicU64::new(0)),
+            down_cnt: Arc::new(AtomicU64::new(0)),
         };
     }
 
@@ -90,5 +92,8 @@ impl Accounting {
 
     pub fn piece_is_reserved(&self, pieceno: usize) -> bool {
         self.reserved[pieceno].load(Ordering::Acquire)
+    }
+    pub fn inc_uploaded(&self) {
+        self.up_cnt.fetch_add(1, Ordering::Release);
     }
 }

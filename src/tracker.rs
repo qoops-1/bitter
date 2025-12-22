@@ -1,8 +1,6 @@
 use core::fmt;
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs},
-    str,
-    time::Duration,
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs}, str, sync::atomic::Ordering, time::Duration
 };
 
 use bytes::{Buf, BufMut, BytesMut};
@@ -13,9 +11,7 @@ use tokio::{net::UdpSocket, time::timeout};
 use tracing::debug;
 
 use crate::{
-    bencoding::{bdecode, BDecode, BencodedValue},
-    metainfo::{BitterHash, Metainfo, PeerId},
-    utils::{BitterMistake, BitterResult},
+    accounting::Accounting, bencoding::{bdecode, BDecode, BencodedValue}, metainfo::{BitterHash, Metainfo, PeerId}, utils::{BitterMistake, BitterResult}
 };
 
 struct AnnounceListIter<'a> {
@@ -73,7 +69,7 @@ mod tests {
     }
 }
 
-pub struct Tracker {
+pub struct Tracker<'a> {
     http_client: Client,
     udp_socket: UdpSocket,
     peer_id: PeerId,
@@ -81,10 +77,12 @@ pub struct Tracker {
     info_hash: BitterHash,
     total_len: u64,
     trackers: Vec<Vec<String>>,
+    stats: &'a Accounting
 }
-impl Tracker {
+impl<'a> Tracker<'a> {
     pub async fn new(
-        meta: &Metainfo,
+        meta: &'a Metainfo,
+        stats: &'a Accounting,
         peer_id: PeerId,
         port: u16,
         total_len: u64,
@@ -110,18 +108,19 @@ impl Tracker {
             info_hash: meta.info.hash,
             total_len,
             trackers,
+            stats
         })
     }
 
-    pub async fn announce_start(&mut self) -> BitterResult<Vec<Peer>> {
+    pub async fn announce(&mut self, event: AnnounceEvent) -> BitterResult<Vec<Peer>> {
         let req = AnnounceRequest {
             info_hash: self.info_hash,
             peer_id: self.peer_id,
             port: self.port,
-            uploaded: 0,
-            downloaded: 0,
+            uploaded: self.stats.up_cnt.load(Ordering::Acquire),
+            downloaded: self.stats.down_cnt.load(Ordering::Acquire),
             left: self.total_len,
-            event: AnnounceEvent::Started,
+            event,
             numwant: 50,
             compact: true,
         };
@@ -389,7 +388,7 @@ struct AnnounceRequest {
     compact: bool,
 }
 
-enum AnnounceEvent {
+pub enum AnnounceEvent {
     Started,
     Completed,
     Stopped,
