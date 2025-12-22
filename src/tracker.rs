@@ -23,6 +23,7 @@ struct AnnounceListIter<'a> {
     tier: usize,
     tracker_pos: usize,
 }
+
 impl<'a> AnnounceListIter<'a> {
     fn new(trackers: &'a Vec<Vec<String>>) -> AnnounceListIter<'a> {
         AnnounceListIter {
@@ -37,20 +38,44 @@ impl<'a> Iterator for AnnounceListIter<'a> {
     type Item = &'a String;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let res: Option<&String> = self
+        let res: Option<Self::Item> = self
             .trackers
             .get(self.tier)
             .and_then(|t| t.get(self.tracker_pos));
 
         if res.is_some() {
-            if self.tracker_pos == self.trackers[self.tier].len() - 1 {
-                self.tier += 1
+            if self.tracker_pos >= self.trackers[self.tier].len() - 1 {
+                self.tier += 1;
+                self.tracker_pos = 0;
             } else {
-                self.tracker_pos += 1
+                self.tracker_pos += 1;
             }
         }
 
         res
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tracker::AnnounceListIter;
+
+    #[test]
+    fn test_tracker_iter() {
+        let t1h1 = String::from("t1h1");
+        let t1h2 = String::from("t1h2");
+        let t2h1 = String::from("t2h1");
+        let t3h1 = String::from("t3h1");
+        let t3h2 = String::from("t3h2");
+        let t3h3 = String::from("t3h3");
+        let trackers: Vec<Vec<String>> = vec![vec![t1h1.clone(), t1h2.clone()], vec![t2h1.clone()], vec![t3h1.clone(), t3h2.clone(), t3h3.clone()]];
+        let expected_trackers = vec![&t1h1, &t1h2, &t2h1, &t3h1, &t3h2, &t3h3];
+        let mut recollected_trackers: Vec<&str> = Vec::new();
+
+        for t in AnnounceListIter::new(&trackers) {
+            recollected_trackers.push(t);
+        }
+        assert_eq!(expected_trackers, recollected_trackers);
     }
 }
 
@@ -194,12 +219,13 @@ const UDP_ANNOUNCE_RESPONSE_MAX_LEN: usize = UDP_ANNOUNCE_RESPONSE_MIN_LEN + 6 *
 
 const UDP_ACTION_CONNECT: u32 = 0;
 const UDP_ACTION_ANNOUNCE: u32 = 1;
+const UDP_RETRIES: u32 = 3;
 
 async fn udp_connect<T: tokio::net::ToSocketAddrs>(
     socket: &UdpSocket,
     url: T,
 ) -> BitterResult<UdpConn> {
-    for i in 0..5 {
+    for i in 0..UDP_RETRIES {
         let mut send_buf = BytesMut::new();
         let tx_id = rand::random::<u32>();
         send_buf.put_u64(0x41727101980); // magic constant
@@ -256,7 +282,7 @@ async fn udp_send_announce<T: tokio::net::ToSocketAddrs>(
     conn: &UdpConn,
     req: &AnnounceRequest,
 ) -> BitterResult<Vec<Peer>> {
-    for i in 0..5 {
+    for i in 0..UDP_RETRIES {
         let mut send_buf = BytesMut::with_capacity(UDP_ANNOUNCE_REQUEST_LEN);
         let tx_id = rand::random::<u32>();
         send_buf.put_u64(conn.0);
@@ -298,9 +324,9 @@ async fn udp_send_announce<T: tokio::net::ToSocketAddrs>(
 
                 let action = recv_buf.get_u32();
                 let recv_tx_id = recv_buf.get_u32();
-                let interval = recv_buf.get_u32();
-                let leechers = recv_buf.get_u32();
-                let seeders = recv_buf.get_u32();
+                let _interval = recv_buf.get_u32();
+                let _leechers = recv_buf.get_u32();
+                let _seeders = recv_buf.get_u32();
                 debug!(remaining = recv_buf.remaining());
                 let mut peers = Vec::with_capacity(recv_buf.remaining() / 6);
 

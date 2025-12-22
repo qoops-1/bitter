@@ -22,7 +22,7 @@ const MAX_CHUNK_LEN: u32 = u32::pow(2, 16); // 64 KB
 const MAX_REQUESTS_INFLIGHT: usize = 5;
 
 #[derive(Clone)]
-pub struct DownloadParams {
+pub struct PeerParams {
     pub peer_id: PeerId,
     pub metainfo: Arc<MetainfoInfo>,
     pub req_piece_len: u32,
@@ -33,7 +33,7 @@ pub struct DownloadParams {
 
 pub struct PeerHandler<'a, T> {
     acct: Accounting,
-    params: &'a DownloadParams,
+    params: &'a PeerParams,
     ptracker: ProgressTracker,
     stats: PeerStats,
     choked: bool,
@@ -68,7 +68,7 @@ type PieceStatus = Option<Vec<Bytes>>;
 
 // #[instrument(skip(params, acct, stream))]
 pub async fn run_peer_handler<T: Unpin + AsyncRead + AsyncWrite>(
-    params: DownloadParams,
+    params: PeerParams,
     acct: Accounting,
     stream: T,
 ) -> BitterResult<()> {
@@ -205,7 +205,7 @@ impl<'a, T> PeerHandler<'a, T>
 where
     T: Unpin + AsyncRead + AsyncWrite,
 {
-    pub fn new(params: &'a DownloadParams, acct: Accounting) -> PeerHandler<'a, T> {
+    pub fn new(params: &'a PeerParams, acct: Accounting) -> PeerHandler<'a, T> {
         let ptracker = ProgressTracker {
             pcs: Vec::new(),
             chunk_len: params.req_piece_len,

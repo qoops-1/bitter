@@ -9,7 +9,7 @@ use tracing::{debug, error, info};
 
 use crate::accounting::Accounting;
 use crate::metainfo::PeerId;
-use crate::peer::{run_peer_handler, DownloadParams};
+use crate::peer::{run_peer_handler, PeerParams};
 use crate::tracker::{Peer, Tracker};
 use crate::{
     metainfo::Metainfo,
@@ -60,7 +60,7 @@ impl Downloader {
         let mut tracker = Tracker::new(&metainfo, peer_id, self.settings.port, total_len).await?;
         let announce_resp = tracker.announce_start().await?;
 
-        let params = DownloadParams {
+        let params = PeerParams {
             peer_id,
             metainfo: Arc::new(metainfo.info),
             req_piece_len: self.settings.req_piece_len,
@@ -121,7 +121,7 @@ impl Downloader {
 }
 
 async fn run_new_peer_conn(
-    params: DownloadParams,
+    params: PeerParams,
     peer: Peer,
     acct: Accounting,
 ) -> BitterResult<()> {

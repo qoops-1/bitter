@@ -3,7 +3,7 @@ use bitter::{
     accounting::Accounting,
     bencoding::bdecode,
     metainfo::{Metainfo, PeerId},
-    peer::{run_peer_handler, DownloadParams},
+    peer::{run_peer_handler, PeerParams},
     protocol::{Handshake, Packet, TcpConn, DEFAULT_BUF_SIZE},
     utils::roundup_div,
 };
@@ -24,7 +24,7 @@ async fn single_peer_basic_download() {
     let total_len = file.len() as u64;
 
     metainfo.info.files[0].path = tempdir.path().join(&metainfo.info.files[0].path);
-    let params = DownloadParams {
+    let params = PeerParams {
         peer_id: PeerId::default(),
         metainfo: Arc::new(metainfo.info.clone()),
         req_piece_len,
