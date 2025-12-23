@@ -24,6 +24,8 @@ const MAX_REQUESTS_INFLIGHT: usize = 5;
 #[derive(Clone)]
 pub struct PeerParams {
     pub peer_id: PeerId,
+    // PeerParams is passed to a peer thread, so rust requires it to have 'static lifetime.
+    // I don't want to copy Metainfo for every thread as it can be of significant size, so I made it Arc
     pub metainfo: Arc<MetainfoInfo>,
     pub req_piece_len: u32,
     pub total_len: u64,

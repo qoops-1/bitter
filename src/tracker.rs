@@ -80,8 +80,8 @@ pub struct Tracker<'a> {
     stats: &'a Accounting
 }
 impl<'a> Tracker<'a> {
-    pub async fn new(
-        meta: &'a Metainfo,
+    pub async fn new<'b>(
+        meta: &'b Metainfo,
         stats: &'a Accounting,
         peer_id: PeerId,
         port: u16,
