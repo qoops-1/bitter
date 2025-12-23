@@ -1,11 +1,12 @@
 use rand::distr::Alphanumeric;
 use rand::{rng, Rng};
+use tokio::signal::ctrl_c;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::task::JoinSet;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::accounting::Accounting;
 use crate::metainfo::PeerId;
@@ -112,6 +113,14 @@ impl Downloader {
                     let (stream, _addr) = res.unwrap();
 
                     jset.spawn(run_peer_handler(params.clone(), acct.clone(), stream));
+                }
+                _ = ctrl_c() => {
+                    warn!("received Ctrl-C, shutting down");
+                    let threads_shut = jset.shutdown();
+                    let announce_stop = tracker.announce(AnnounceEvent::Stopped);
+
+                    threads_shut.await;
+                    return announce_stop.await.map(|_| ());
                 }
             }
         }
