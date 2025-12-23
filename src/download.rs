@@ -11,7 +11,7 @@ use tracing::{debug, error, warn};
 use crate::accounting::Accounting;
 use crate::metainfo::PeerId;
 use crate::peer::{run_peer_handler, PeerParams};
-use crate::tracker::{Peer, Tracker, AnnounceEvent};
+use crate::tracker::{Peer, PeriodicAnnouncer, Tracker};
 use crate::{
     metainfo::Metainfo,
     utils::{BitterMistake, BitterResult},
@@ -28,7 +28,6 @@ pub fn download(metainfo: Metainfo, settings: Settings) -> BitterResult<()> {
 
 pub struct Downloader {
     peer_id: String,
-    peers: Vec<Peer>,
     settings: Settings,
 }
 
@@ -42,7 +41,6 @@ impl Downloader {
 
         Downloader {
             peer_id: id,
-            peers: Vec::new(),
             settings,
         }
     }
@@ -58,8 +56,7 @@ impl Downloader {
             .expect("peer_id contains more bytes than expected");
         let total_len: u64 = metainfo.info.files.iter().map(|f| f.length).sum();
 
-        let mut tracker = Tracker::new(&metainfo, &acct, peer_id, self.settings.port, total_len).await?;
-        let announce_resp = tracker.announce(AnnounceEvent::Started).await?;
+        let tracker = Tracker::new(&metainfo, &acct, peer_id, self.settings.port, total_len).await?;
 
         let params = PeerParams {
             peer_id,
@@ -70,25 +67,18 @@ impl Downloader {
             output_dir: self.settings.output_dir.clone(),
         };
 
-        self.peers.extend(announce_resp);
-
         let server = TcpListener::bind((self.settings.ip, self.settings.port))
             .await
             .map_err(BitterMistake::new_err)?;
 
-        let mut jset = JoinSet::new();
+        let mut peer_pool = JoinSet::new();
+        let mut periodic_announcer = PeriodicAnnouncer::new(&tracker);
 
-        for (i, p) in self.peers.iter().enumerate() {
-            let mut cur_params = params.clone();
-            if i < OPTIMISITIC_UNCHOKE_NUM {
-                cur_params.start_peer_choked = false;
-            }
-            jset.spawn(run_new_peer_conn(cur_params, p.clone(), acct.clone()));
-        }
-
+        let mut unchoked = 0;
+        
         loop {
             select! {
-                res = jset.join_next() => {
+                res = peer_pool.join_next(), if !peer_pool.is_empty() => {
                     match res {
                         Some(r) => {
                             match r {
@@ -97,36 +87,47 @@ impl Downloader {
                                 Ok(Err(e)) => error!("peer_exit_error {}", e),
                             }
                             if total_pieces as u64 == acct.down_cnt.load(Ordering::Acquire) {
+                                debug!("download done");
+                                tracker.announce_completed().await?;
                                 if !self.settings.keep_going {
-                                    debug!("download done");
-                                    break;
+                                    peer_pool.shutdown().await;
+                                    return Ok(());
                                 }
                             }
                         }
                         None => {
                             debug!("no_more_peers");
-                            break;
+                            return Ok(())
                         }
                 }}
+                new_peers = periodic_announcer.announce() => {
+                    for p in new_peers {
+                        let mut cur_params = params.clone();
+                        if unchoked < OPTIMISITIC_UNCHOKE_NUM {
+                            cur_params.start_peer_choked = false;
+                            unchoked += 1;
+                        }
+                        peer_pool.spawn(run_new_peer_conn(cur_params, p.clone(), acct.clone()));
+                    }
+                }
                 res = server.accept() => {
                     // TODO: handle result properly, it can return WOULDBLOCK and etc
                     let (stream, _addr) = res.unwrap();
 
-                    jset.spawn(run_peer_handler(params.clone(), acct.clone(), stream));
+                    peer_pool.spawn(run_peer_handler(params.clone(), acct.clone(), stream));
                 }
                 _ = ctrl_c() => {
                     warn!("received Ctrl-C, shutting down");
-                    let threads_shut = jset.shutdown();
-                    let announce_stop = tracker.announce(AnnounceEvent::Stopped);
+                    let threads_shut = peer_pool.shutdown();
+                    let announce_stop = tracker.announce_stop();
 
                     threads_shut.await;
                     return announce_stop.await.map(|_| ());
                 }
             }
         }
-
-        Ok(())
     }
+
 }
 
 async fn run_new_peer_conn(

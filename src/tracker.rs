@@ -1,14 +1,14 @@
 use core::fmt;
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs}, str, sync::atomic::Ordering, time::Duration
+    cell::RefCell, net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs}, str, sync::atomic::Ordering, time::Duration
 };
 
 use bytes::{Buf, BufMut, BytesMut};
 use rand::{rng, seq::SliceRandom};
 use reqwest::{Client, Url};
 use serde::Serialize;
-use tokio::{net::UdpSocket, time::timeout};
-use tracing::debug;
+use tokio::{net::UdpSocket, time::{self, timeout, Interval}};
+use tracing::{debug, warn};
 
 use crate::{
     accounting::Accounting, bencoding::{bdecode, BDecode, BencodedValue}, metainfo::{BitterHash, Metainfo, PeerId}, utils::{BitterMistake, BitterResult}
@@ -76,7 +76,7 @@ pub struct Tracker<'a> {
     port: u16,
     info_hash: BitterHash,
     total_len: u64,
-    trackers: Vec<Vec<String>>,
+    trackers: RefCell<Vec<Vec<String>>>,
     stats: &'a Accounting
 }
 impl<'a> Tracker<'a> {
@@ -107,12 +107,28 @@ impl<'a> Tracker<'a> {
             port,
             info_hash: meta.info.hash,
             total_len,
-            trackers,
+            trackers: RefCell::new(trackers),
             stats
         })
     }
+    
+    pub async fn announce_start(&self) -> BitterResult<AnnounceSuccess> {
+        self.announce(AnnounceEvent::Started).await
+    }
 
-    pub async fn announce(&mut self, event: AnnounceEvent) -> BitterResult<Vec<Peer>> {
+    pub async fn announce_empty(&self) -> BitterResult<AnnounceSuccess> {
+        self.announce(AnnounceEvent::Empty).await
+    }
+
+    pub async fn announce_completed(&self) -> BitterResult<()> {
+        self.announce(AnnounceEvent::Completed).await.map(|_| ())
+    }
+
+    pub async fn announce_stop(&self) -> BitterResult<()> {
+        self.announce(AnnounceEvent::Stopped).await.map(|_| ())
+    }
+
+    pub async fn announce(&self, event: AnnounceEvent) -> BitterResult<AnnounceSuccess> {
         let req = AnnounceRequest {
             info_hash: self.info_hash,
             peer_id: self.peer_id,
@@ -126,18 +142,19 @@ impl<'a> Tracker<'a> {
         };
 
         let mut err = BitterMistake::new("No trackers in the list");
-        let mut iter = AnnounceListIter::new(&self.trackers);
+        let trackers = self.trackers.borrow();
+        let mut iter = AnnounceListIter::new(&trackers);
 
         for url in &mut iter {
             match self.send_announce_request(url, &req).await {
-                Ok(peers_resp) => {
+                Ok(resp) => {
                     debug!(
                         event = "received_peers",
                         tracker = url,
-                        num = peers_resp.len()
+                        num = resp.peers.len()
                     );
                     self.move_up_current(iter.pos);
-                    return Ok(peers_resp);
+                    return Ok(resp);
                 }
                 Err(e) => err = e,
             }
@@ -155,7 +172,7 @@ impl<'a> Tracker<'a> {
         &self,
         url: &str,
         req: &AnnounceRequest,
-    ) -> BitterResult<Vec<Peer>> {
+    ) -> BitterResult<AnnounceSuccess> {
         if url.starts_with("http://") || url.starts_with("https://") {
             http_announce(&self.http_client, url, req).await
         } else if url.starts_with("udp://") {
@@ -167,12 +184,12 @@ impl<'a> Tracker<'a> {
         }
     }
 
-    fn move_up_current(&mut self, iter_pos: Option<(usize, usize)>) {
+    fn move_up_current(&self, iter_pos: Option<(usize, usize)>) {
         let (tier, pos) = iter_pos.unwrap_or((0, 0));
         if pos == 0 {
             return;
         }
-        self.trackers[tier].swap(0, pos);
+        self.trackers.borrow_mut()[tier].swap(0, pos);
     }
 }
 
@@ -180,7 +197,7 @@ async fn http_announce(
     client: &Client,
     url: &str,
     req: &AnnounceRequest,
-) -> BitterResult<Vec<Peer>> {
+) -> BitterResult<AnnounceSuccess> {
     let response = client
         .get(url)
         .query(&req)
@@ -200,7 +217,7 @@ async fn http_announce(
         AnnounceResponse::Failure(f) => Err(BitterMistake::new_owned(format!(
             "Error received from tracker: {f}"
         ))),
-        AnnounceResponse::Peers(resp) => Result::Ok(resp.peers),
+        AnnounceResponse::Success(resp) => Result::Ok(resp),
     }
 }
 
@@ -213,6 +230,7 @@ const UDP_ANNOUNCE_RESPONSE_MAX_LEN: usize = UDP_ANNOUNCE_RESPONSE_MIN_LEN + 6 *
 
 const UDP_ACTION_CONNECT: u32 = 0;
 const UDP_ACTION_ANNOUNCE: u32 = 1;
+const UDP_ACTION_ERROR: u32 = 3;
 const UDP_RETRIES: u32 = 3;
 
 async fn udp_connect<T: tokio::net::ToSocketAddrs>(
@@ -249,18 +267,23 @@ async fn udp_connect<T: tokio::net::ToSocketAddrs>(
 
                 let action = recv_buf.get_u32();
                 let recv_tx_id = recv_buf.get_u32();
-                let conn_id = recv_buf.get_u64();
-
-                if action != UDP_ACTION_CONNECT {
-                    return Err(BitterMistake::new(
-                        "wrong action received in response to connection",
-                    ));
-                }
 
                 if recv_tx_id != tx_id {
                     return Err(BitterMistake::new("transaction id mismatch"));
                 }
 
+                if action == UDP_ACTION_ERROR {
+                    // TODO: error handling!
+                } else if action != UDP_ACTION_CONNECT {
+                    return Err(BitterMistake::new(
+                        "wrong action received in response to connection",
+                    ));
+                }
+
+
+                let conn_id = recv_buf.get_u64();
+
+                
                 return Ok(UdpConn(conn_id));
             }
             Ok(Err(e)) => return Err(BitterMistake::new_err(e)),
@@ -275,7 +298,7 @@ async fn udp_send_announce<T: tokio::net::ToSocketAddrs>(
     url: T,
     conn: &UdpConn,
     req: &AnnounceRequest,
-) -> BitterResult<Vec<Peer>> {
+) -> BitterResult<AnnounceSuccess> {
     for i in 0..UDP_RETRIES {
         let mut send_buf = BytesMut::with_capacity(UDP_ANNOUNCE_REQUEST_LEN);
         let tx_id = rand::random::<u32>();
@@ -318,7 +341,20 @@ async fn udp_send_announce<T: tokio::net::ToSocketAddrs>(
 
                 let action = recv_buf.get_u32();
                 let recv_tx_id = recv_buf.get_u32();
-                let _interval = recv_buf.get_u32();
+
+                if recv_tx_id != tx_id {
+                    return Err(BitterMistake::new("transaction id mismatch"));
+                }
+
+                if action == UDP_ACTION_ERROR {
+                    // TODO: error handling!
+                } else if action != UDP_ACTION_ANNOUNCE {
+                    return Err(BitterMistake::new(
+                        "wrong action received in response to announce",
+                    ));
+                }
+
+                let interval = recv_buf.get_u32();
                 let _leechers = recv_buf.get_u32();
                 let _seeders = recv_buf.get_u32();
                 debug!(remaining = recv_buf.remaining());
@@ -338,17 +374,13 @@ async fn udp_send_announce<T: tokio::net::ToSocketAddrs>(
                     return Err(BitterMistake::new("trailing bytes in announce packet"));
                 }
 
-                if action != UDP_ACTION_ANNOUNCE {
-                    return Err(BitterMistake::new(
-                        "wrong action received in response to announce",
-                    ));
-                }
+                
 
-                if recv_tx_id != tx_id {
-                    return Err(BitterMistake::new("transaction id mismatch"));
-                }
-
-                return Ok(peers);
+                
+                return Ok(AnnounceSuccess {
+                    peers,
+                    interval: Duration::from_secs(interval.into())
+                });
             }
             Ok(Err(e)) => return Err(BitterMistake::new_err(e)),
             Err(_) => continue,
@@ -361,7 +393,7 @@ async fn udp_announce(
     socket: &UdpSocket,
     url: &str,
     req: &AnnounceRequest,
-) -> BitterResult<Vec<Peer>> {
+) -> BitterResult<AnnounceSuccess> {
     let authority = Url::parse(url)
         .map_err(BitterMistake::new_err)?
         .socket_addrs(|| None)
@@ -426,14 +458,14 @@ impl Serialize for AnnounceEvent {
     }
 }
 
-struct AnnouncePeers {
+pub struct AnnounceSuccess {
     peers: Vec<Peer>,
     interval: Duration,
 }
 
 enum AnnounceResponse {
     Failure(String),
-    Peers(AnnouncePeers),
+    Success(AnnounceSuccess),
 }
 
 #[derive(Clone)]
@@ -503,7 +535,7 @@ impl BDecode for AnnounceResponse {
         let interval =
             Duration::from_secs(dict.get_val("interval")?.try_into_int()?.unsigned_abs());
 
-        Ok(AnnounceResponse::Peers(AnnouncePeers { peers, interval }))
+        Ok(AnnounceResponse::Success(AnnounceSuccess { peers, interval }))
     }
 }
 
@@ -536,6 +568,47 @@ impl BDecode for Vec<Peer> {
             _ => Err(BitterMistake::new(
                 "peer list expected to be a list or string",
             )),
+        }
+    }
+}
+
+pub struct PeriodicAnnouncer<'a> {
+    tracker: &'a Tracker<'a>,
+    interval: Option<Interval>
+}
+
+impl<'a> PeriodicAnnouncer<'a> {
+    pub fn new(tracker: &'a Tracker) -> PeriodicAnnouncer<'a> {
+        return PeriodicAnnouncer {
+            tracker,
+            interval: None
+        }
+    }
+
+    pub async fn announce(&mut self) -> Vec<Peer> {
+        let response = match &mut self.interval {
+            Some(interval) => {
+                interval.tick().await;
+                self.tracker.announce_empty().await
+            }
+            None => {
+                self.tracker.announce_start().await
+            }
+        };
+        match response {
+            Ok(AnnounceSuccess { peers, interval }) => {
+                if self.interval.as_ref().map(|i| i.period() != interval).unwrap_or(true) {
+                    let mut ticker = time::interval(interval);
+                    ticker.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+                    self.interval = Some(ticker);
+                }
+                // TODO: return only new peers
+                peers
+            }
+            Err(e) => {
+                warn!("Failed to announce to trackers: {}", e);
+                Vec::new()
+            }
         }
     }
 }
