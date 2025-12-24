@@ -198,7 +198,7 @@ async fn http_announce(
     let response = client
         .get(url)
         .query(&req)
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(10))
         .send()
         .await
         .map_err(BitterMistake::new_err)?;
@@ -250,7 +250,7 @@ async fn udp_connect<T: tokio::net::ToSocketAddrs>(
         let mut recv_buf = BytesMut::with_capacity(UDP_CONN_RESPONSE_LEN);
 
         match timeout(
-            Duration::from_secs(15 * (u64::pow(2, i))),
+            Duration::from_secs(5 * (u64::pow(2, i))),
             socket.recv_buf_from(&mut recv_buf),
         )
         .await
