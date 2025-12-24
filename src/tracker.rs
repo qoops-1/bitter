@@ -1,6 +1,6 @@
 use core::fmt;
 use std::{
-    cell::RefCell, collections::HashSet, net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs}, str, sync::atomic::Ordering, time::Duration
+    collections::HashSet, net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs}, str, sync::{atomic::Ordering, Mutex}, time::Duration
 };
 
 use bytes::{Buf, BufMut, BytesMut};
@@ -76,7 +76,7 @@ pub struct Tracker<'a> {
     port: u16,
     info_hash: BitterHash,
     total_len: u64,
-    trackers: RefCell<Vec<Vec<String>>>,
+    trackers: Mutex<Vec<Vec<String>>>,
     stats: &'a Accounting
 }
 impl<'a> Tracker<'a> {
@@ -107,7 +107,7 @@ impl<'a> Tracker<'a> {
             port,
             info_hash: meta.info.hash,
             total_len,
-            trackers: RefCell::new(trackers),
+            trackers: Mutex::new(trackers),
             stats
         })
     }
@@ -142,7 +142,7 @@ impl<'a> Tracker<'a> {
         };
 
         let mut err = BitterMistake::new("No trackers in the list");
-        let trackers = self.trackers.borrow();
+        let mut trackers = self.trackers.lock().unwrap(); // currently the lock is only used in the main thread, shouldn't be poisoned
         let mut iter = AnnounceListIter::new(&trackers);
 
         for url in &mut iter {
@@ -153,7 +153,12 @@ impl<'a> Tracker<'a> {
                         tracker = url,
                         num = resp.peers.len()
                     );
-                    self.move_up_current(iter.pos);
+                    // move succeeded tracker to top of tier
+                    let (tier, pos) = iter.pos.unwrap_or((0, 0));
+                    if pos != 0 {
+                        trackers[tier].swap(0, pos);
+                    }
+
                     return Ok(resp);
                 }
                 Err(e) => err = e,
@@ -182,14 +187,6 @@ impl<'a> Tracker<'a> {
                 "invalid schema in tracker url: {url}"
             )))
         }
-    }
-
-    fn move_up_current(&self, iter_pos: Option<(usize, usize)>) {
-        let (tier, pos) = iter_pos.unwrap_or((0, 0));
-        if pos == 0 {
-            return;
-        }
-        self.trackers.borrow_mut()[tier].swap(0, pos);
     }
 }
 
