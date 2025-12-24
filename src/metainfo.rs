@@ -48,7 +48,7 @@ impl TryFrom<&[u8]> for BitterHash {
     }
 }
 
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PeerId(pub [u8; BITTORRENT_PEERID_LEN]);
 
 impl Serialize for PeerId {

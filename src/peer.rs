@@ -854,9 +854,9 @@ mod tests {
             0,
             plen as u32,
             &vec![
-                Bytes::copy_from_slice(ones_piece1.clone()),
-                Bytes::copy_from_slice(ones_piece2.clone()),
-                Bytes::copy_from_slice(ones_piece3.clone()),
+                Bytes::copy_from_slice(ones_piece1),
+                Bytes::copy_from_slice(ones_piece2),
+                Bytes::copy_from_slice(ones_piece3),
             ],
             &files,
             &PathBuf::new()

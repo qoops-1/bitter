@@ -1,6 +1,6 @@
 use core::fmt;
 use std::{
-    cell::RefCell, net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs}, str, sync::atomic::Ordering, time::Duration
+    cell::RefCell, collections::HashSet, net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs}, str, sync::atomic::Ordering, time::Duration
 };
 
 use bytes::{Buf, BufMut, BytesMut};
@@ -468,7 +468,7 @@ enum AnnounceResponse {
     Success(AnnounceSuccess),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq, Hash)]
 pub struct Peer {
     pub addr: SocketAddr,
     pub peer_id: Option<PeerId>,
@@ -574,14 +574,16 @@ impl BDecode for Vec<Peer> {
 
 pub struct PeriodicAnnouncer<'a> {
     tracker: &'a Tracker<'a>,
-    interval: Option<Interval>
+    interval: Option<Interval>,
+    seen_peers: HashSet<Peer>,
 }
 
 impl<'a> PeriodicAnnouncer<'a> {
     pub fn new(tracker: &'a Tracker) -> PeriodicAnnouncer<'a> {
         return PeriodicAnnouncer {
             tracker,
-            interval: None
+            interval: None,
+            seen_peers: HashSet::new(),
         }
     }
 
@@ -602,8 +604,13 @@ impl<'a> PeriodicAnnouncer<'a> {
                     ticker.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
                     self.interval = Some(ticker);
                 }
-                // TODO: return only new peers
-                peers
+                peers.into_iter().filter(|p| {
+                    let seen = self.seen_peers.contains(p);
+                    if !seen {
+                        self.seen_peers.insert(p.clone());
+                    }
+                    !seen
+                }).collect()
             }
             Err(e) => {
                 warn!("Failed to announce to trackers: {}", e);
