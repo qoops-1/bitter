@@ -482,7 +482,7 @@ impl BDecode for Peer {
             .and_then(|v| v.try_into_bytestring())
             .and_then(|v| v.try_into().map_err(BitterMistake::new_err))
             .ok();
-        let port: u16 = hmap.get_val("port")?.try_into_u16()? as u16;
+        let port: u16 = hmap.get_val("port")?.try_into_u16()?;
         let addr = hmap.get_val("ip")?.try_into_string()?;
 
         let mut sockaddrs = (addr, port)
@@ -513,7 +513,7 @@ impl BDecode for AnnounceResponse {
                 Err(e) => {
                     return Result::Err(BitterMistake::new_owned(format!(
                         "failure reason parsing error: {}",
-                        e.to_string()
+                        e
                     )))
                 }
                 Ok(k) => Ok(AnnounceResponse::Failure(k.to_owned())),
@@ -528,8 +528,8 @@ impl BDecode for AnnounceResponse {
         let peers: Vec<Peer> = dict
             .get_val("peers")?
             .try_into_list()?
-            .into_iter()
-            .map(|v| Peer::bdecode(&v))
+            .iter()
+            .map(|v| Peer::bdecode(v))
             .collect::<BitterResult<Vec<_>>>()?;
 
         let interval =
@@ -580,7 +580,7 @@ pub struct PeriodicAnnouncer<'a> {
 
 impl<'a> PeriodicAnnouncer<'a> {
     pub fn new(tracker: &'a Tracker) -> PeriodicAnnouncer<'a> {
-        return PeriodicAnnouncer {
+        PeriodicAnnouncer {
             tracker,
             interval: None,
             seen_peers: HashSet::new(),

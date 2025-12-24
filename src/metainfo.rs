@@ -166,8 +166,8 @@ impl BDecode for MetainfoInfo {
             _ => dict
                 .get_val("files")?
                 .try_into_list()?
-                .into_iter()
-                .map(|f| MetainfoFile::bdecode(&f))
+                .iter()
+                .map(|f| MetainfoFile::bdecode(f))
                 .collect::<BitterResult<Vec<_>>>()?,
         };
 

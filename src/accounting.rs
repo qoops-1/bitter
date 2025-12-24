@@ -24,13 +24,13 @@ impl Accounting {
         downloaded.resize_with(total, AtomicBool::default);
         reserved.resize_with(total, AtomicBool::default);
 
-        return Accounting {
+        Accounting {
             available: Vec::with_capacity(0),
             downloaded: Arc::new(downloaded),
             reserved: Arc::new(reserved),
             up_cnt: Arc::new(AtomicU64::new(0)),
             down_cnt: Arc::new(AtomicU64::new(0)),
-        };
+        }
     }
 
     pub fn init_available(&mut self, available: BitVec) {

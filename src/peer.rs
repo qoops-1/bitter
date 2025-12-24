@@ -125,7 +125,7 @@ impl ProgressTracker {
         piece.chunks[chunk_no] = ChunkStatus::Downloading;
     }
 
-    fn complete_chunk<'b>(
+    fn complete_chunk(
         &mut self,
         index: u32,
         begin: u32,
@@ -151,8 +151,7 @@ impl ProgressTracker {
         if self.pcs[piece_pos]
             .chunks
             .iter()
-            .find(|c| !matches!(c, ChunkStatus::Present(_)))
-            .is_some()
+            .any(|c| !matches!(&c, ChunkStatus::Present(_)))
         {
             return Ok(None);
         }
@@ -791,7 +790,7 @@ mod tests {
         file.push("basic_test_file");
 
         let mut ones_piece: Vec<u8> = vec![1; plen];
-        let mut h_piece: Vec<u8> = vec!['h' as u8; plen];
+        let mut h_piece: Vec<u8> = vec![b'h'; plen];
 
         let files = vec![MetainfoFile {
             length: u64::MAX,
@@ -902,9 +901,9 @@ mod tests {
                 path: file3.clone(),
             },
         ];
-        let ones = vec![1 as u8; 10];
-        let twos = vec![2 as u8; 5];
-        let threes = vec![3 as u8; 5];
+        let ones = vec![1_u8; 10];
+        let twos = vec![2_u8; 5];
+        let threes = vec![3_u8; 5];
         let mut received = ones.clone();
         received.append(&mut twos.clone());
         received.append(&mut threes.clone());
@@ -965,12 +964,12 @@ mod tests {
                 path: file3.clone(),
             },
         ];
-        let ones = vec![1 as u8; 10];
-        let twos = vec![2 as u8; 5];
-        let threes = vec![3 as u8; 5];
+        let ones = vec![1_u8; 10];
+        let twos = vec![2_u8; 5];
+        let threes = vec![3_u8; 5];
         let chunk1 = ones[..5].to_vec();
-        let chunk2 = vec![&ones[5..], &twos[..2]].concat();
-        let chunk3 = vec![&twos[2..], &threes].concat();
+        let chunk2 = [&ones[5..], &twos[..2]].concat();
+        let chunk3 = [&twos[2..], &threes].concat();
 
         save_piece(
             0,

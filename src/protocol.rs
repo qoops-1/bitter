@@ -11,7 +11,7 @@ use crate::utils::BitterResult;
 
 // Common constants
 const MAX_PACKET_LEN: usize = 1024 * 1024 * 8;
-pub const DEFAULT_BUF_SIZE: usize = MAX_PACKET_LEN as usize;
+pub const DEFAULT_BUF_SIZE: usize = MAX_PACKET_LEN;
 const MSG_LEN_LEN: usize = 4;
 const INCORRECT_LEN_ERROR: &str = "Packet has incorrect size";
 // Handshake msg constants
@@ -54,7 +54,7 @@ pub enum Packet {
     Keepalive,
 }
 
-static KEEPALIVE_BYTES: &[u8] = (0 as u32).to_be_bytes().as_slice();
+static KEEPALIVE_BYTES: &[u8] = 0_u32.to_be_bytes().as_slice();
 
 impl Packet {
     pub fn parse(mut buf: Bytes) -> BitterResult<Self> {
@@ -224,7 +224,7 @@ where
         }
 
         let proto_name = self.buf.split_to(BITTORRENT_PROTO_LEN);
-        if &proto_name != BITTORRENT_PROTO {
+        if proto_name != BITTORRENT_PROTO {
             return Err(BitterMistake::new("unknown protocol"));
         }
 
