@@ -141,7 +141,7 @@ impl BDecode for MetainfoInfo {
         let piece_length = dict.get_val("piece length")?.try_into_u32()?.to_owned();
         let pieces_all: Vec<u8> = dict.get_val("pieces")?.try_into_bytestring()?.to_owned();
 
-        if pieces_all.len() % BITTORRENT_HASH_LEN != 0 {
+        if !pieces_all.len().is_multiple_of(BITTORRENT_HASH_LEN) {
             return Err(BitterMistake::new_owned(format!(
                 "Incorrect size of \"pieces\" hash: {}",
                 pieces_all.len()

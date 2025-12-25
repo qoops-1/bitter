@@ -3,12 +3,16 @@ use bitter::{
     accounting::Accounting,
     bencoding::bdecode,
     metainfo::{Metainfo, PeerId},
-    peer::{run_peer_handler, PeerParams},
-    protocol::{Handshake, Packet, TcpConn, DEFAULT_BUF_SIZE},
+    peer::{PeerParams, run_peer_handler},
+    protocol::{DEFAULT_BUF_SIZE, Handshake, Packet, TcpConn},
     utils::roundup_div,
 };
 use bytes::Bytes;
-use std::{fs, path::PathBuf, sync::{atomic::Ordering, Arc}};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{Arc, atomic::Ordering},
+};
 use tempdir::TempDir;
 use tokio::{self, io::duplex};
 

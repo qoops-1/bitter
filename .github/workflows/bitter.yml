@@ -24,12 +24,14 @@ jobs:
     - name: Install llvm-tools, used to generate coverage
       uses: actions-rs/toolchain@v1
       with:
-        toolchain: nightly
+        toolchain: stable
         profile: minimal
         override: true
-        components: llvm-tools-preview
+        components: rustfmt, llvm-tools-preview
     - name: Build
       run: cargo build
+    - name: Formatting
+      run: cargo fmt --check
     - name: Run tests
       run: cargo test
     - name: Setup grcov tool

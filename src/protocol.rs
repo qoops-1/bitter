@@ -1,5 +1,5 @@
 use crate::{
-    metainfo::{BitterHash, PeerId, BITTORRENT_HASH_LEN, BITTORRENT_PEERID_LEN},
+    metainfo::{BITTORRENT_HASH_LEN, BITTORRENT_PEERID_LEN, BitterHash, PeerId},
     utils::BitterMistake,
 };
 use bit_vec::BitVec;
@@ -65,11 +65,11 @@ impl Packet {
             MSG_CODE_UNCHOKE => Ok(Packet::Unchoke),
             MSG_CODE_INTERESTED => Ok(Packet::Interested),
             MSG_CODE_NOT_INTERESTED => Ok(Packet::NotInterested),
-            MSG_CODE_HAVE => parse_have(buf),
-            MSG_CODE_BITFIELD => parse_bitfield(buf),
-            MSG_CODE_REQUEST => parse_request(buf),
+            MSG_CODE_HAVE => parse_have(&mut buf),
+            MSG_CODE_BITFIELD => parse_bitfield(&buf),
+            MSG_CODE_REQUEST => parse_request(&mut buf),
             MSG_CODE_PIECE => parse_piece(buf),
-            MSG_CODE_CANCEL => parse_cancel(buf),
+            MSG_CODE_CANCEL => parse_cancel(&mut buf),
             _ => Err(BitterMistake::new("unknown packet type")),
         }
     }
@@ -297,7 +297,7 @@ where
         Ok(nbytes)
     }
 
-    pub async fn write<'a>(&mut self, packet: &'a Packet) -> BitterResult<()> {
+    pub async fn write(&mut self, packet: &Packet) -> BitterResult<()> {
         let mut buf = packet.serialize();
         trace!(event = "write_packet", length = buf.len());
         while buf.has_remaining() {
@@ -317,7 +317,7 @@ where
     }
 }
 
-fn parse_have(mut buf: Bytes) -> BitterResult<Packet> {
+fn parse_have(buf: &mut Bytes) -> BitterResult<Packet> {
     if buf.remaining() != 4 {
         return Err(BitterMistake::new(INCORRECT_LEN_ERROR));
     }
@@ -325,11 +325,11 @@ fn parse_have(mut buf: Bytes) -> BitterResult<Packet> {
     Ok(Packet::Have(pieceno))
 }
 
-fn parse_bitfield(buf: Bytes) -> BitterResult<Packet> {
-    Ok(Packet::Bitfield(BitVec::from_bytes(&buf)))
+fn parse_bitfield(buf: &Bytes) -> BitterResult<Packet> {
+    Ok(Packet::Bitfield(BitVec::from_bytes(buf)))
 }
 
-fn parse_request(buf: Bytes) -> BitterResult<Packet> {
+fn parse_request(buf: &mut Bytes) -> BitterResult<Packet> {
     parse_request_internal(buf).map(|(index, begin, length)| Packet::Request {
         index,
         begin,
@@ -351,7 +351,7 @@ fn parse_piece(mut buf: Bytes) -> BitterResult<Packet> {
     })
 }
 
-fn parse_cancel(buf: Bytes) -> BitterResult<Packet> {
+fn parse_cancel(buf: &mut Bytes) -> BitterResult<Packet> {
     parse_request_internal(buf).map(|(index, begin, length)| Packet::Cancel {
         index,
         begin,
@@ -359,7 +359,7 @@ fn parse_cancel(buf: Bytes) -> BitterResult<Packet> {
     })
 }
 
-fn parse_request_internal(mut buf: Bytes) -> BitterResult<(u32, u32, u32)> {
+fn parse_request_internal(buf: &mut Bytes) -> BitterResult<(u32, u32, u32)> {
     if buf.remaining() != MSG_LEN_REQUEST - MSG_TYPE_LEN {
         return Err(BitterMistake::new(INCORRECT_LEN_ERROR));
     }
@@ -378,7 +378,7 @@ mod tests {
     use tokio::io::duplex;
 
     use crate::metainfo::{BitterHash, PeerId};
-    use crate::protocol::{Handshake, DEFAULT_BUF_SIZE, MAX_PACKET_LEN};
+    use crate::protocol::{DEFAULT_BUF_SIZE, Handshake, MAX_PACKET_LEN};
 
     use super::{Packet, TcpConn};
 

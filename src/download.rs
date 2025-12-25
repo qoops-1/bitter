@@ -1,21 +1,21 @@
 use rand::distr::Alphanumeric;
-use rand::{rng, Rng};
-use tokio::signal::ctrl_c;
-use std::sync::atomic::Ordering;
+use rand::{Rng, rng};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
+use tokio::signal::ctrl_c;
 use tokio::task::JoinSet;
 use tracing::{debug, error, warn};
 
 use crate::accounting::Accounting;
 use crate::metainfo::PeerId;
-use crate::peer::{run_peer_handler, PeerParams};
+use crate::peer::{PeerParams, run_peer_handler};
 use crate::tracker::{Peer, PeriodicAnnouncer, Tracker};
 use crate::{
+    Settings,
     metainfo::Metainfo,
     utils::{BitterMistake, BitterResult},
-    Settings,
 };
 
 const OPTIMISITIC_UNCHOKE_NUM: usize = 6;
@@ -56,7 +56,8 @@ impl Downloader {
             .expect("peer_id contains more bytes than expected");
         let total_len: u64 = metainfo.info.files.iter().map(|f| f.length).sum();
 
-        let tracker = Tracker::new(&metainfo, &acct, peer_id, self.settings.port, total_len).await?;
+        let tracker =
+            Tracker::new(&metainfo, &acct, peer_id, self.settings.port, total_len).await?;
 
         let params = PeerParams {
             peer_id,
@@ -75,7 +76,7 @@ impl Downloader {
         let mut periodic_announcer = PeriodicAnnouncer::new(&tracker);
 
         let mut unchoked = 0;
-        
+
         loop {
             select! {
                 res = peer_pool.join_next(), if !peer_pool.is_empty() => {
@@ -127,14 +128,9 @@ impl Downloader {
             }
         }
     }
-
 }
 
-async fn run_new_peer_conn(
-    params: PeerParams,
-    peer: Peer,
-    acct: Accounting,
-) -> BitterResult<()> {
+async fn run_new_peer_conn(params: PeerParams, peer: Peer, acct: Accounting) -> BitterResult<()> {
     let stream = TcpStream::connect(peer.addr)
         .await
         .map_err(BitterMistake::new_err)?;

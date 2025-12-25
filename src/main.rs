@@ -1,4 +1,4 @@
-use bitter::{run, Settings};
+use bitter::{Settings, run};
 use clap::Parser;
 use std::{
     net::{IpAddr, Ipv4Addr},
@@ -16,13 +16,13 @@ struct Args {
     log_level: LevelFilter,
 
     // Output directory for downloaded files
-    #[arg(short,long)]
+    #[arg(short, long)]
     output: Option<PathBuf>,
 
     // Don't exit and start seeding after the file is downloaded
     #[arg(short, long, default_value_t = false)]
     keep_going: bool,
-    
+
     metainfo: PathBuf,
 }
 

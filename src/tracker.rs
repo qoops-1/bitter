@@ -1,17 +1,28 @@
 use core::fmt;
 use std::{
-    collections::HashSet, net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs}, str, sync::{atomic::Ordering}, time::Duration
+    collections::HashSet,
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs},
+    str,
+    sync::atomic::Ordering,
+    time::Duration,
 };
 
 use bytes::{Buf, BufMut, BytesMut};
 use rand::{rng, seq::SliceRandom};
 use reqwest::{Client, Url};
 use serde::Serialize;
-use tokio::{net::UdpSocket, sync::Mutex, time::{self, timeout, Interval}};
+use tokio::{
+    net::UdpSocket,
+    sync::Mutex,
+    time::{self, Interval, timeout},
+};
 use tracing::{debug, warn};
 
 use crate::{
-    accounting::Accounting, bencoding::{bdecode, BDecode, BencodedValue}, metainfo::{BitterHash, Metainfo, PeerId}, utils::{BitterMistake, BitterResult}
+    accounting::Accounting,
+    bencoding::{BDecode, BencodedValue, bdecode},
+    metainfo::{BitterHash, Metainfo, PeerId},
+    utils::{BitterMistake, BitterResult},
 };
 
 struct AnnounceListIter<'a> {
@@ -21,7 +32,10 @@ struct AnnounceListIter<'a> {
 
 impl<'a> AnnounceListIter<'a> {
     fn new(trackers: &'a Vec<Vec<String>>) -> AnnounceListIter<'a> {
-        AnnounceListIter {trackers, pos: None}
+        AnnounceListIter {
+            trackers,
+            pos: None,
+        }
     }
 }
 
@@ -29,19 +43,16 @@ impl<'a> Iterator for AnnounceListIter<'a> {
     type Item = &'a String;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let (tier, pos) = self.pos.map_or((0,0), |(t, p)| {
-         if p < self.trackers[t].len() - 1 {
-             (t, p + 1)
-         } else {
-             (t + 1, 0)
-         }
+        let (tier, pos) = self.pos.map_or((0, 0), |(t, p)| {
+            if p < self.trackers[t].len() - 1 {
+                (t, p + 1)
+            } else {
+                (t + 1, 0)
+            }
         });
         self.pos = Some((tier, pos));
-        let res: Option<Self::Item> = self
-            .trackers
-            .get(tier)
-            .and_then(|t| t.get(pos));
-        
+        let res: Option<Self::Item> = self.trackers.get(tier).and_then(|t| t.get(pos));
+
         res
     }
 }
@@ -58,7 +69,11 @@ mod tests {
         let t3h1 = String::from("t3h1");
         let t3h2 = String::from("t3h2");
         let t3h3 = String::from("t3h3");
-        let trackers: Vec<Vec<String>> = vec![vec![t1h1.clone(), t1h2.clone()], vec![t2h1.clone()], vec![t3h1.clone(), t3h2.clone(), t3h3.clone()]];
+        let trackers: Vec<Vec<String>> = vec![
+            vec![t1h1.clone(), t1h2.clone()],
+            vec![t2h1.clone()],
+            vec![t3h1.clone(), t3h2.clone(), t3h3.clone()],
+        ];
         let expected_trackers = vec![&t1h1, &t1h2, &t2h1, &t3h1, &t3h2, &t3h3];
         let mut recollected_trackers: Vec<&str> = Vec::new();
 
@@ -77,7 +92,7 @@ pub struct Tracker<'a> {
     info_hash: BitterHash,
     total_len: u64,
     trackers: Mutex<Vec<Vec<String>>>,
-    stats: &'a Accounting
+    stats: &'a Accounting,
 }
 impl<'a> Tracker<'a> {
     pub async fn new<'b>(
@@ -108,10 +123,10 @@ impl<'a> Tracker<'a> {
             info_hash: meta.info.hash,
             total_len,
             trackers: Mutex::new(trackers),
-            stats
+            stats,
         })
     }
-    
+
     pub async fn announce_start(&self) -> BitterResult<AnnounceSuccess> {
         self.announce(AnnounceEvent::Started).await
     }
@@ -277,10 +292,8 @@ async fn udp_connect<T: tokio::net::ToSocketAddrs>(
                     ));
                 }
 
-
                 let conn_id = recv_buf.get_u64();
 
-                
                 return Ok(UdpConn(conn_id));
             }
             Ok(Err(e)) => return Err(BitterMistake::new_err(e)),
@@ -371,12 +384,9 @@ async fn udp_send_announce<T: tokio::net::ToSocketAddrs>(
                     return Err(BitterMistake::new("trailing bytes in announce packet"));
                 }
 
-                
-
-                
                 return Ok(AnnounceSuccess {
                     peers,
-                    interval: Duration::from_secs(interval.into())
+                    interval: Duration::from_secs(interval.into()),
                 });
             }
             Ok(Err(e)) => return Err(BitterMistake::new_err(e)),
@@ -511,7 +521,7 @@ impl BDecode for AnnounceResponse {
                     return Result::Err(BitterMistake::new_owned(format!(
                         "failure reason parsing error: {}",
                         e
-                    )))
+                    )));
                 }
                 Ok(k) => Ok(AnnounceResponse::Failure(k.to_owned())),
             },
@@ -532,7 +542,10 @@ impl BDecode for AnnounceResponse {
         let interval =
             Duration::from_secs(dict.get_val("interval")?.try_into_int()?.unsigned_abs());
 
-        Ok(AnnounceResponse::Success(AnnounceSuccess { peers, interval }))
+        Ok(AnnounceResponse::Success(AnnounceSuccess {
+            peers,
+            interval,
+        }))
     }
 }
 
@@ -590,24 +603,30 @@ impl<'a> PeriodicAnnouncer<'a> {
                 interval.tick().await;
                 self.tracker.announce_empty().await
             }
-            None => {
-                self.tracker.announce_start().await
-            }
+            None => self.tracker.announce_start().await,
         };
         match response {
             Ok(AnnounceSuccess { peers, interval }) => {
-                if self.interval.as_ref().map(|i| i.period() != interval).unwrap_or(true) {
+                if self
+                    .interval
+                    .as_ref()
+                    .map(|i| i.period() != interval)
+                    .unwrap_or(true)
+                {
                     let mut ticker = time::interval(interval);
                     ticker.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
                     self.interval = Some(ticker);
                 }
-                peers.into_iter().filter(|p| {
-                    let seen = self.seen_peers.contains(p);
-                    if !seen {
-                        self.seen_peers.insert(p.clone());
-                    }
-                    !seen
-                }).collect()
+                peers
+                    .into_iter()
+                    .filter(|p| {
+                        let seen = self.seen_peers.contains(p);
+                        if !seen {
+                            self.seen_peers.insert(p.clone());
+                        }
+                        !seen
+                    })
+                    .collect()
             }
             Err(e) => {
                 warn!("Failed to announce to trackers: {}", e);

@@ -1,4 +1,10 @@
-use std::{io::SeekFrom, marker::PhantomData, path::{Path, PathBuf}, sync::{atomic::Ordering, Arc}, time::Duration};
+use std::{
+    io::SeekFrom,
+    marker::PhantomData,
+    path::{Path, PathBuf},
+    sync::{Arc, atomic::Ordering},
+    time::Duration,
+};
 
 use bit_vec::BitVec;
 use bytes::{Buf, Bytes, BytesMut};
@@ -14,8 +20,8 @@ use tracing::{info, instrument};
 use crate::{
     accounting::Accounting,
     metainfo::{BitterHash, MetainfoFile, MetainfoInfo, PeerId},
-    protocol::{Handshake, Packet, TcpConn, DEFAULT_BUF_SIZE},
-    utils::{roundup_div, BitterMistake, BitterResult},
+    protocol::{DEFAULT_BUF_SIZE, Handshake, Packet, TcpConn},
+    utils::{BitterMistake, BitterResult, roundup_div},
 };
 
 const MAX_CHUNK_LEN: u32 = u32::pow(2, 16); // 64 KB
@@ -125,12 +131,7 @@ impl ProgressTracker {
         piece.chunks[chunk_no] = ChunkStatus::Downloading;
     }
 
-    fn complete_chunk(
-        &mut self,
-        index: u32,
-        begin: u32,
-        data: Bytes,
-    ) -> BitterResult<PieceStatus> {
+    fn complete_chunk(&mut self, index: u32, begin: u32, data: Bytes) -> BitterResult<PieceStatus> {
         let chunk_no = (begin / self.chunk_len) as usize;
         let piece_pos_opt = self
             .pcs
@@ -144,7 +145,7 @@ impl ProgressTracker {
             ChunkStatus::Present(_) => {
                 return Err(BitterMistake::new_owned(format!(
                     "Piece {index}+{begin} is already received"
-                )))
+                )));
             }
             _ => self.pcs[piece_pos].chunks[chunk_no] = ChunkStatus::Present(data),
         };
@@ -364,7 +365,6 @@ where
         )
         .await?;
 
-        
         conn.write(&Packet::Piece {
             index: piece_no,
             begin: chunk_offset,
@@ -389,13 +389,13 @@ where
                 self.params.metainfo.piece_length,
                 &full_piece,
                 &self.params.metainfo.files,
-                &self.params.output_dir
+                &self.params.output_dir,
             )
             .await?;
             self.acct.mark_downloaded(index as usize);
             self.stats.recv_pieces += 1;
         }
-        
+
         Ok(())
     }
 
@@ -425,7 +425,7 @@ where
         if begin + length > self.params.metainfo.piece_length {
             return Err(BitterMistake::new("Received chunk outside of piece bounds"));
         }
-        if begin % plen != 0 {
+        if !begin.is_multiple_of(plen) {
             return Err(BitterMistake::new("Received chunk at weird offset"));
         }
 
@@ -561,7 +561,7 @@ async fn read_chunk(
 async fn save_piece(
     index: u32,
     piece_len: u32,
-    chunks: &Vec<Bytes>,
+    chunks: &[Bytes],
     files: &Vec<MetainfoFile>,
     output_dir: &Path,
 ) -> BitterResult<()> {
@@ -573,6 +573,7 @@ async fn save_piece(
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(false)
             .mode(0o755)
             .open(output_dir.join(path))
             .await
@@ -665,10 +666,10 @@ mod tests {
 
     use crate::{
         metainfo::MetainfoFile,
-        peer::{save_piece, ChunkStatus, PieceInProgress},
+        peer::{ChunkStatus, PieceInProgress, save_piece},
     };
 
-    use super::{match_span_to_files, FileMapping, ProgressTracker};
+    use super::{FileMapping, ProgressTracker, match_span_to_files};
 
     #[test]
     fn identify_ftw_whole_file_test() {
@@ -816,9 +817,15 @@ mod tests {
             "file should be the same as the submitted piece"
         );
 
-        save_piece(1, plen as u32, &vec![Bytes::from(h_piece.clone())], &files, &PathBuf::new())
-            .await
-            .unwrap();
+        save_piece(
+            1,
+            plen as u32,
+            &vec![Bytes::from(h_piece.clone())],
+            &files,
+            &PathBuf::new(),
+        )
+        .await
+        .unwrap();
 
         written_file = File::open(&file).await.unwrap();
         piece_from_file.clear();
@@ -858,7 +865,7 @@ mod tests {
                 Bytes::copy_from_slice(ones_piece3),
             ],
             &files,
-            &PathBuf::new()
+            &PathBuf::new(),
         )
         .await
         .unwrap();
@@ -907,9 +914,15 @@ mod tests {
         let mut received = ones.clone();
         received.append(&mut twos.clone());
         received.append(&mut threes.clone());
-        save_piece(0, plen as u32, &vec![Bytes::from(received)], &files, &PathBuf::new())
-            .await
-            .unwrap();
+        save_piece(
+            0,
+            plen as u32,
+            &vec![Bytes::from(received)],
+            &files,
+            &PathBuf::new(),
+        )
+        .await
+        .unwrap();
         let mut written_file1 = File::open(&file1).await.unwrap();
         let mut written_file2 = File::open(&file2).await.unwrap();
         let mut written_file3 = File::open(&file3).await.unwrap();
@@ -980,7 +993,7 @@ mod tests {
                 Bytes::from(chunk3),
             ],
             &files,
-            &PathBuf::new()
+            &PathBuf::new(),
         )
         .await
         .unwrap();
