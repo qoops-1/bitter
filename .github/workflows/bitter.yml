@@ -36,12 +36,7 @@ jobs:
       run: cargo test
     - name: Setup grcov tool
       run: |
-        release_url="$(curl \
-          -H "Accept: application/vnd.github.v3+json" \
-          https://api.github.com/repos/mozilla/grcov/releases | \
-          jq -r '.[0].assets | map(select(.browser_download_url | test(".*x86_64-unknown-linux-musl.tar.bz2$"))) | .[0].browser_download_url')"
-
-        curl -sL "$release_url" | sudo tar xvj -C /usr/local/bin/
+        curl -sL "https://github.com/mozilla/grcov/releases/latest/download/grcov-x86_64-unknown-linux-gnu.tar.bz2"| sudo tar xvj -C /usr/local/bin/
     - name: Generate and upload coverage report
       run: |
         grcov . -s . --keep-only src/**/*.rs --binary-path ./target/debug/ -t coveralls+ --commit-sha $GITHUB_SHA \
