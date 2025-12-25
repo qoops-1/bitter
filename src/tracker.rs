@@ -1,13 +1,13 @@
 use core::fmt;
 use std::{
-    collections::HashSet, net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs}, str, sync::{atomic::Ordering, Mutex}, time::Duration
+    collections::HashSet, net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs}, str, sync::{atomic::Ordering}, time::Duration
 };
 
 use bytes::{Buf, BufMut, BytesMut};
 use rand::{rng, seq::SliceRandom};
 use reqwest::{Client, Url};
 use serde::Serialize;
-use tokio::{net::UdpSocket, time::{self, timeout, Interval}};
+use tokio::{net::UdpSocket, sync::Mutex, time::{self, timeout, Interval}};
 use tracing::{debug, warn};
 
 use crate::{
@@ -142,7 +142,7 @@ impl<'a> Tracker<'a> {
         };
 
         let mut err = BitterMistake::new("No trackers in the list");
-        let mut trackers = self.trackers.lock().unwrap(); // currently the lock is only used in the main thread, shouldn't be poisoned
+        let mut trackers = self.trackers.lock().await;
         let mut iter = AnnounceListIter::new(&trackers);
 
         for url in &mut iter {

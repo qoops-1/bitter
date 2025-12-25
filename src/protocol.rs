@@ -297,7 +297,7 @@ where
         Ok(nbytes)
     }
 
-    pub async fn write<'a>(&mut self, packet: &Packet) -> BitterResult<()> {
+    pub async fn write<'a>(&mut self, packet: &'a Packet) -> BitterResult<()> {
         let mut buf = packet.serialize();
         trace!(event = "write_packet", length = buf.len());
         while buf.has_remaining() {
